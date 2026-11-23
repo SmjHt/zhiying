@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f8f9f5">
+  <title>知映 · 本地科普视频工作台</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <svg class="svg-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 4v16M17 4v16M3 9h4m10 0h4M3 15h4m10 0h4"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8zM14 3v6h5M8 13h8M8 17h6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8z"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="m11 4-6 5H2v6h3l6 5zm4 4c3 2 3 6 0 8m3-11c5 4 5 10 0 14"/></symbol>
+    <symbol id="i-leaf" viewBox="0 0 24 24"><path d="M20 3C9 2 3 6 4 13s13 12 16-10ZM5 20 16 9"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></symbol>
+  </defs></svg>
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="知映首页"><span class="brand-mark"><svg class="icon"><use href="#i-play"/></svg></span><span>知映<span class="brand-en">ZHIYING</span></span></a>
+    <nav aria-label="主导航"><span class="nav-active">创作工作台</span><button id="help-open" class="nav-button">使用指南 <span>↗</span></button></nav>
+    <span class="local-badge"><span class="status-dot"></span>仅在本机运行</span>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div><div class="eyebrow"><svg class="icon"><use href="#i-leaf"/></svg> 小小的创作，也能带来改变</div><h1>把有用的知识，<span>变成看得懂的视频。</span></h1><p>从一份反诈资料开始，让每一次提醒都更容易被听见。</p></div>
+      <div class="hero-note"><span class="note-kicker">让善意，有画面</span><div class="note-art"><span class="paper-mini"><svg class="icon"><use href="#i-file"/></svg></span><span class="dotted-line"></span><span class="film-mini"><svg class="icon"><use href="#i-play"/></svg></span></div><span>不用剪辑经验，认真核对就好。</span></div>
+    </section>
+
+    <section class="workspace" aria-label="科普视频制作工作台">
+      <div class="workspace-bar"><div class="workspace-label"><svg class="icon"><use href="#i-film"/></svg><strong>新建科普短片</strong><span class="small-badge">反诈宣传</span></div><span id="save-status" class="save-status">草稿保存在当前浏览器</span></div>
+      <nav class="steps" aria-label="制作步骤">
+        <button class="step active" id="step-1" data-step="1"><span class="step-number">01</span><span><strong>整理资料</strong><small>告诉我们，你想传递什么</small></span><svg class="icon"><use href="#i-arrow"/></svg></button>
+        <button class="step" id="step-2" data-step="2"><span class="step-number">02</span><span><strong>核对分镜</strong><small>让每一句表达准确、易懂</small></span><svg class="icon"><use href="#i-arrow"/></svg></button>
+        <button class="step" id="step-3" data-step="3"><span class="step-number">03</span><span><strong>预览与导出</strong><small>把知识变成可以分享的短片</small></span><svg class="icon"><use href="#i-check"/></svg></button>
+      </nav>
+
+      <div class="studio-grid">
+        <div class="editor-column">
+          <section id="panel-1" class="panel" aria-labelledby="source-heading">
+            <div class="section-heading"><div><h2 id="source-heading">先放入一份有用的资料</h2><p>保留事实，不凭空补充。好视频从准确的信息开始。</p></div><span class="section-index">01 / 03</span></div>
+            <label class="field-label" for="project-title">作品名称</label><input id="project-title" maxlength="40" value="守住钱袋子 · 社区反诈提醒" placeholder="给你的短片起个名字">
+            <div class="label-row"><label class="field-label" for="source-input">反诈宣传资料</label><button id="sample-button" class="text-button"><svg class="icon"><use href="#i-spark"/></svg>填入反诈示例</button></div>
+            <button id="story-button" class="story-starter"><span class="story-starter-icon"><svg class="icon"><use href="#i-film"/></svg></span><span><strong>试试：一条刷单消息背后的陷阱</strong><small>收到消息 → 识别风险 → 停止转账 → 核实 → 求助</small></span><svg class="icon"><use href="#i-arrow"/></svg></button>
+            <textarea id="source-input" maxlength="1800" rows="10" placeholder="粘贴你已经核实过的反诈资料…&#10;&#10;建议每个要点单独一段，可用「标题：正文」的格式。&#10;例如：验证码不外传：任何索要验证码的陌生来电，都要提高警惕。"></textarea>
+            <div class="field-foot"><span>支持 20–1800 字，最多 8 幕</span><span><b id="source-count">0</b> / 1800</span></div>
+            <div class="quiet-note"><svg class="icon"><use href="#i-info"/></svg><span>当前是<strong>本地规则分镜</strong>，没有接入生成式 AI；示例仅供演示，发布前仍需核实。</span></div>
+            <div class="section-divider"></div>
+            <div class="label-row"><span class="field-label">选择渲染风格库</span><span class="muted">画面语言可自主切换</span></div>
+            <div class="style-options" role="group" aria-label="渲染风格库">
+              <button class="style-option selected" data-style="illustration" aria-pressed="true"><strong>浅色插画</strong><small>明亮卡片情景 · 适老默认</small></button>
+              <button class="style-option" data-style="noir" aria-pressed="false"><strong>夜色发光</strong><small>暗底发光线稿隐喻 · 影院感</small></button>
+            </div>
+            <p id="noir-note" class="micro-note" hidden>夜色发光使用固定影院配色（奶油金 + 警示红），不套用下方浅色模板；每幕道具库随之切换为隐喻道具。</p>
+            <div id="theme-row">
+            <div class="label-row"><span class="field-label">选择画面风格</span><span class="muted">同一份知识，不同的温度</span></div>
+            <div class="theme-options" role="group" aria-label="画面风格">
+              <button class="theme-option selected" data-theme="warm" aria-pressed="true"><span class="theme-swatch swatch-warm"><i></i><b>Aa</b><em></em></span><span>温暖社区 <span class="theme-check">✓</span></span></button>
+              <button class="theme-option" data-theme="teal" aria-pressed="false"><span class="theme-swatch swatch-teal"><i></i><b>Aa</b><em></em></span><span>清晰科普 <span class="theme-check">✓</span></span></button>
+              <button class="theme-option" data-theme="bold" aria-pressed="false"><span class="theme-swatch swatch-bold"><i></i><b>Aa</b><em></em></span><span>醒目提醒 <span class="theme-check">✓</span></span></button>
+            </div>
+            </div>
+            <label class="accessible-option" for="accessible-mode"><span class="access-icon">Aa</span><span><strong>让长辈看得清、听得懂</strong><small>更大的字幕，更从容的离线中文配音</small></span><input id="accessible-mode" type="checkbox" role="switch" checked><span class="switch" aria-hidden="true"></span></label>
+            <button id="generate-button" class="button primary wide"><svg class="icon"><use href="#i-film"/></svg>整理为分镜草稿<svg class="icon end"><use href="#i-arrow"/></svg></button>
+          </section>
+
+          <section id="panel-2" class="panel" hidden aria-labelledby="scenes-heading">
+            <div class="section-heading"><div><h2 id="scenes-heading">让每一幕，都说清一件事</h2><p>安排情景、编辑画面，对照原资料后逐幕确认。</p></div><span class="section-index">02 / 03</span></div>
+            <div class="review-strip"><span><svg class="icon"><use href="#i-shield"/></svg>内容把关，始终由你决定</span><strong id="review-count">0 / 0 已核对</strong></div>
+            <div id="scene-list" class="scene-list" aria-label="分镜列表"></div>
+            <div class="scene-order"><span id="scene-label" class="muted">第 1 幕</span><div><button id="move-earlier" class="text-button" aria-label="将当前分镜前移">← 前移</button><button id="move-later" class="text-button" aria-label="将当前分镜后移">后移 →</button></div></div>
+            <div class="editor-tabs" role="tablist" aria-label="分镜编辑方式"><button id="tab-script" role="tab" aria-selected="true" aria-controls="edit-script" class="selected">脚本与核对</button><button id="tab-visual" role="tab" aria-selected="false" aria-controls="edit-visual">情景与画面</button></div>
+            <div class="scene-editor">
+              <div id="edit-script" role="tabpanel" aria-labelledby="tab-script">
+                <label class="field-label" for="scene-title">当前分镜标题</label><input id="scene-title" maxlength="24">
+                <div class="label-row"><label class="field-label" for="scene-narration">配音与字幕</label><span id="narration-count" class="muted"></span></div><textarea id="scene-narration" rows="5" maxlength="300"></textarea>
+                <div class="source-quote"><strong><svg class="icon"><use href="#i-file"/></svg>对照原资料</strong><p id="source-quote"></p></div>
+              </div>
+              <div id="edit-visual" role="tabpanel" aria-labelledby="tab-visual" hidden>
+                <div class="label-row"><span class="field-label">这一幕，用什么道具？</span><span class="muted" id="kind-library-note">当前风格库：浅色插画</span></div>
+                <div class="scenario-options" id="scenario-options" role="group" aria-label="道具库"></div>
+                <div id="visual-text-row">
+                <div class="label-row"><label class="field-label" for="visual-text">画面文字 / 对话内容</label><span id="visual-text-count" class="muted">0 / 60 字</span></div>
+                <textarea id="visual-text" rows="2" maxlength="60" placeholder="写出这幕需要观众看到的文字；可留空"></textarea>
+                </div>
+                <div id="prop-params" class="prop-params"></div>
+                <p class="micro-note">仅显示在画面中，不会自动加入配音；情景示意不代表真实聊天记录。</p>
+                <div class="image-editor">
+                  <div class="label-row"><span class="field-label">也可以，用自己的图片</span><span class="small-badge">仅保存到本机</span></div>
+                  <div class="local-image-row"><img id="asset-thumbnail" alt="当前分镜的本地配图" hidden><div><strong id="asset-name">正在使用情景插画</strong><span id="asset-status" role="status" aria-live="polite">PNG / JPEG / WebP，最大 4 MB</span></div></div>
+                  <input id="local-image" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+                  <div class="image-buttons"><button id="choose-image" class="button secondary" type="button">选择本机图片</button><button id="remove-image" class="text-button" type="button" hidden>恢复情景插画</button></div>
+                  <div id="image-adjustments" hidden>
+                    <fieldset class="image-fit"><legend>图片显示方式</legend><label><input type="radio" name="image-fit" value="cover" checked>铺满画面</label><label><input type="radio" name="image-fit" value="contain">完整显示</label></fieldset>
+                    <div id="crop-controls"><div class="range-label"><label for="image-focus-x">水平取景</label><output id="focus-x-value" for="image-focus-x">50%</output></div><input id="image-focus-x" type="range" min="0" max="100" value="50"><div class="range-label"><label for="image-focus-y">垂直取景</label><output id="focus-y-value" for="image-focus-y">50%</output></div><input id="image-focus-y" type="range" min="0" max="100" value="50"><button id="center-image" class="text-button">重置为居中</button><p class="micro-note">只有超出画框的方向会发生裁切；移动滑块选取要保留的区域。</p></div>
+                  </div>
+                  <p class="micro-note">请使用有权使用的图片，避开人脸、账号等隐私；原文件不修改，导入副本移除元数据后保存在本机。</p>
+                </div>
+              </div>
+              <label class="review-checkbox"><input id="scene-reviewed" type="checkbox"><span>我已核对本幕文字和画面，确认表达准确、素材可用且无敏感信息</span></label>
+            </div>
+            <div class="button-row"><button id="back-source" class="button secondary">返回资料</button><button id="to-export" class="button primary">前往预览与导出<svg class="icon"><use href="#i-arrow"/></svg></button></div>
+            <p class="micro-note">修改文字或画面后，该幕需要重新核对；调整顺序后需重新核对全部分镜。</p>
+          </section>
+
+          <section id="panel-3" class="panel" hidden aria-labelledby="export-heading">
+            <div class="section-heading"><div><h2 id="export-heading">让这份提醒，真正被看见</h2><p>生成带中文配音和字幕的 MP4，保存在本机。</p></div><span class="section-index">03 / 03</span></div>
+            <div class="export-cover"><span class="export-icon"><svg class="icon"><use href="#i-film"/></svg></span><div><h3 id="export-title"></h3><p id="export-meta"></p></div></div>
+            <div class="spec-grid"><div><span>视频格式</span><strong>MP4 · H.264</strong></div><div><span>画面尺寸</span><strong>1280 × 720</strong></div><div><span>配音方式</span><strong>本机中文语音</strong></div><div><span>字幕交付</span><strong>画面字幕 + SRT</strong></div></div>
+            <div class="export-checks"><div><svg class="icon"><use href="#i-check"/></svg><span id="export-review">全部分镜已经人工确认</span></div><div><svg class="icon"><use href="#i-check"/></svg><span>资料、配音和视频不发送到外部服务</span></div><div><svg class="icon"><use href="#i-check"/></svg><span>按实际语音时长合成，不截断配音</span></div></div>
+            <div id="render-progress" class="render-progress" hidden role="status" aria-live="polite"><div><strong id="progress-message">准备制作…</strong><span id="progress-value">0%</span></div><progress id="progress-bar" value="0" max="100"></progress><small>制作期间可以留在这里，文件将保存在项目的 exports 目录。</small></div>
+            <div id="export-success" class="export-success" hidden><div class="success-heading"><svg class="icon"><use href="#i-check"/></svg><strong>短片制作完成</strong></div><p id="result-details"></p><a id="download-video" class="button primary wide" download="知映-反诈宣传.mp4"><svg class="icon"><use href="#i-download"/></svg>下载 MP4 视频</a><div class="extra-downloads"><a id="download-subtitles" download="反诈宣传.srt">另存 SRT 字幕</a><span>·</span><a id="download-script" download="反诈宣传脚本.txt">另存分镜脚本</a></div></div>
+            <button id="export-button" class="button primary wide"><svg class="icon"><use href="#i-film"/></svg>开始本地合成</button>
+            <button id="back-scenes" class="text-button back-link">← 返回修改分镜</button>
+            <p class="micro-note">此版本生成带情景动画的图文配音短片，不生成真人视频；本机语音的自然度有限。</p>
+          </section>
+        </div>
+
+        <aside class="preview-column" aria-label="视频预览"><div class="preview-inner">
+          <div class="preview-top"><h2><span class="status-dot"></span><span id="preview-title">画面预览</span></h2><span class="small-badge">16:9 · 横屏</span></div>
+          <div class="preview-screen"><img id="preview-image" alt="反诈科普短片画面预览"><video id="result-video" controls preload="metadata" hidden aria-label="已生成的反诈宣传视频"></video><span id="preview-empty" class="preview-empty">正在载入本地画面…</span><span id="playback-badge" class="playback-badge" hidden>预演草稿</span></div>
+          <audio id="scene-audio" preload="auto"></audio>
+          <div class="preview-controls"><button id="previous-scene" aria-label="上一幕" class="round-button">‹</button><div><strong id="preview-position">示例画面</strong><span id="preview-caption">实际视频会完整配音并分页显示字幕</span></div><button id="next-scene" aria-label="下一幕" class="round-button">›</button></div>
+          <div class="preview-transport"><button id="play-preview" class="button secondary" type="button"><svg class="icon"><use href="#i-play"/></svg><span>连续预览</span></button><button id="audition-scene" class="text-button" type="button"><svg class="icon"><use href="#i-volume"/></svg>试听本幕</button><span id="playback-status" role="status" aria-live="polite"></span></div>
+          <div class="timeline-heading"><span>分镜时间轴</span><small>拖动卡片调整顺序 · 点击切换</small></div>
+          <div class="preview-timeline" id="preview-timeline" aria-label="分镜时间轴"></div>
+          <div class="preview-details"><span><svg class="icon"><use href="#i-volume"/></svg><span id="voice-label">慢速中文配音</span></span><span><b>CC</b>大字幕</span><span id="estimated-time">约 1 分钟</span></div>
+          <div class="care-card"><span class="care-icon"><svg class="icon"><use href="#i-leaf"/></svg></span><div><h3>让知识没有距离</h3><p>少一点术语，多一点耐心。<br>一条清楚的提醒，也能守护一个家庭。</p></div></div>
+          <div class="privacy-line"><svg class="icon"><use href="#i-shield"/></svg><span>本地整理 · 离线配音 · 不上传资料</span></div>
+        </div></aside>
+      </div>
+    </section>
+    <footer><span><strong>知映</strong> 让有用的知识，被更多人看见。</span><span>本地原型 v0.4 <i>·</i> 用技术传递善意</span></footer>
+  </main>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+  <dialog id="help-dialog"><div class="dialog-heading"><h2>从资料到短片，只需三步</h2><button id="help-close" class="round-button" aria-label="关闭使用指南">×</button></div><ol><li><strong>整理资料</strong><p>粘贴已核实的反诈资料，或载入演示示例；分段写清要点，并自主选择渲染风格库（浅色插画 / 夜色发光）。</p></li><li><strong>核对分镜</strong><p>本地规则拆分原文并按关键词推荐道具，不核查事实。可在当前风格库中自主更换每幕道具、编辑道具参数（步骤、百分比、票据条目、标红关键词等）、导入本机图片并调整取景；在时间轴上拖动卡片或前移后移调整顺序后需重新核对全部内容。画面会随配音逐条呈现并高亮风险。</p></li><li><strong>试听与导出</strong><p>可逐幕试听本机配音、连续预览动态草稿；确认后用 Windows 离线中文语音和本机 FFmpeg 制作真实 MP4，完成后可播放、下载视频和字幕。</p></li></ol><div class="quiet-note">草稿保存在当前浏览器，图片副本保存在 assets 目录，视频保存在 exports 目录；均不对外上传或发布。恢复插画或清空草稿不会删除本地素材和成片。</div><button id="clear-draft" class="text-button danger">清空浏览器草稿（不会删除已导出的视频）</button></dialog>
+</body>
+</html>
