@@ -9,7 +9,12 @@ try {
     $synth.SelectVoice($voice.VoiceInfo.Name)
     $synth.Rate = [int]$data.rate
     $synth.Volume = 100
-    foreach ($segment in $data.segments) {
+    $segments = @($data.segments)
+    $total = $segments.Count
+    $number = 0
+    foreach ($segment in $segments) {
+        $number++
+        Write-Output ("PROGRESS {0}/{1}" -f $number, $total)
         $synth.SetOutputToWaveFile([string]$segment.path)
         $synth.Speak([string]$segment.text)
         $synth.SetOutputToNull()

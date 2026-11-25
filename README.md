@@ -69,7 +69,7 @@ zhiying/
 │  ├─ styles.css
 │  └─ favicon.svg
 ├─ tests/
-│  ├─ test_local.py     # 后端 unittest（44 项）
+│  ├─ test_local.py     # 后端 unittest（48 项）
 │  └─ browser-check.cjs # Playwright 浏览器回归（27 项）
 ├─ requirements.txt
 ├─ 配置环境.cmd          # 一键建 .venv 并安装依赖
@@ -101,10 +101,14 @@ zhiying/
 - **安全边界**：仅监听 127.0.0.1；校验 Host/Origin 与自定义请求头；CSP 仅 self；
   图片格式与大小校验；前端一律 `textContent` 插入，杜绝注入。
 - **导出管线**：逐幕帧序列经 ffconcat 拼接，libx264（yuv420p）+ AAC + faststart 封装 MP4。
+  配音子进程按段流式回报 `PROGRESS n/m`，任务进度显示"正在生成第 n / m 段"；
+  120 秒无任何输出即判定语音引擎卡死并中止（取代原先整段 240 秒盲等超时）。
+- **渲染缓存**：本地配图的裁切/缩放结果按 `图片id + 适配方式 + 焦点 + 底色` 记忆化
+  （`lru_cache`，8 张），同幕连续帧不再逐帧重解码 PNG。
 
 ## 运行测试
 
-后端（44 项）：
+后端（48 项）：
 
 ```bat
 .venv\Scripts\python.exe -m unittest discover -s tests -v

@@ -15,11 +15,11 @@ from unittest.mock import patch
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from rendering import (SCENE_KINDS, animation_times, draw_frame, font, phase_starts, preview_png,
-                       split_captions, wrap_text)
+from rendering import (SCENE_KINDS, animation_times, draw_frame, fitted_asset, font, phase_starts,
+                       preview_png, split_captions, wrap_text)
 from server import (Handler, ThreadingHTTPServer, ValidationError, cleanup_exports, gc_files, make_draft,
-                    prune_export_intermediates, reap_jobs, scene_frames, store_image, suggest_visual,
-                    timestamp, trim_by_mtime, validate_project, validate_visual)
+                    prune_export_intermediates, reap_jobs, run_streamed, scene_frames, store_image,
+                    suggest_visual, timestamp, trim_by_mtime, validate_project, validate_visual)
 
 
 class DraftTests(unittest.TestCase):
@@ -139,6 +139,22 @@ class VisualTests(unittest.TestCase):
         self.assertEqual(validate_project(self.project)['scenes'][0]['visual']['imageId'], asset['id'])
         with Image.open(Path(self.directory.name) / f'{asset["id"]}.png') as stored:
             self.assertEqual(stored.info, {})
+
+    def test_local_image_fit_result_is_cached(self):
+        source = Image.new('RGB', (800, 400), 'red')
+        asset = store_image(self.encoded_image(source))
+        self.scene['visual']['imageId'] = asset['id']
+        before = fitted_asset.cache_info()
+        first = draw_frame(self.scene, 0, 1)
+        mid = fitted_asset.cache_info()
+        second = draw_frame(self.scene, 0, 1)
+        after = fitted_asset.cache_info()
+        self.assertEqual(mid.misses, before.misses + 1)
+        self.assertEqual(after.hits, mid.hits + 1)
+        self.assertEqual(first.tobytes(), second.tobytes())
+        self.scene['visual']['focusX'] = 30
+        draw_frame(self.scene, 0, 1)
+        self.assertEqual(fitted_asset.cache_info().misses, after.misses + 1)
 
     def test_exif_orientation_and_transparency(self):
         original = Image.new('RGB', (80, 40), 'red')
@@ -363,6 +379,34 @@ class CleanupTests(unittest.TestCase):
             meta = scene_frames(project, 0)
             self.assertTrue(meta['frames'])
             self.assertGreater(cached.stat().st_mtime, past + 60)
+
+
+class StreamProcessTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.log = Path(self.tmp.name) / 'render.log'
+
+    def test_progress_lines_report_and_persist_to_log(self):
+        script = ('import time\n'
+                  'for i in range(3):\n'
+                  '    print(f"PROGRESS {i + 1}/3", flush=True)\n'
+                  '    time.sleep(0.02)\n')
+        calls = []
+        run_streamed([sys.executable, '-c', script], self.log,
+                     lambda done, total: calls.append((done, total)), stall=15)
+        self.assertEqual(calls, [(1, 3), (2, 3), (3, 3)])
+        self.assertIn(b'PROGRESS 3/3', self.log.read_bytes())
+
+    def test_stall_kills_silent_process(self):
+        script = 'import time; print("ready", flush=True); time.sleep(30)'
+        with self.assertRaisesRegex(RuntimeError, '没有进展'):
+            run_streamed([sys.executable, '-c', script], self.log, stall=0.5)
+        self.assertIn(b'ready', self.log.read_bytes())
+
+    def test_nonzero_exit_raises(self):
+        with self.assertRaisesRegex(RuntimeError, '合成失败'):
+            run_streamed([sys.executable, '-c', 'raise SystemExit(3)'], self.log, stall=15)
 
 
 class PreviewCacheTests(unittest.TestCase):

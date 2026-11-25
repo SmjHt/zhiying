@@ -6,6 +6,7 @@ import io
 import json
 import mimetypes
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -47,6 +48,7 @@ AUDITION_MAX_BYTES = 128 * 1024 ** 2
 PREVIEW_LOCKS_MAX = 4096
 PREVIEW_LOCKS_KEEP = 3072
 JOB_KEEP = 20
+SPEECH_STALL_SECONDS = 120
 
 
 class ValidationError(ValueError):
@@ -274,6 +276,42 @@ def run_process(command, log, timeout=240):
     with log.open('ab') as output:
         output.write(result.stdout)
     if result.returncode:
+        raise RuntimeError('本地配音或视频合成失败，请检查任务目录中的 render.log。')
+
+
+def run_streamed(command, log, on_progress=None, stall=120):
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, creationflags=0x08000000)
+    lines = queue.Queue()
+
+    def pump():
+        for line in process.stdout:
+            lines.put(line)
+        process.stdout.close()
+        lines.put(None)
+
+    threading.Thread(target=pump, daemon=True).start()
+    output = []
+    while True:
+        try:
+            line = lines.get(timeout=stall)
+        except queue.Empty:
+            process.kill()
+            process.wait()
+            with log.open('ab') as handle:
+                handle.write(b''.join(output))
+            raise RuntimeError('本地配音长时间没有进展，已中止。请检查中文语音是否正常，然后重试。')
+        if line is None:
+            break
+        output.append(line)
+        if on_progress:
+            matched = re.match(rb'PROGRESS (\d+)/(\d+)', line)
+            if matched:
+                on_progress(int(matched.group(1)), int(matched.group(2)))
+    returncode = process.wait()
+    with log.open('ab') as handle:
+        handle.write(b''.join(output))
+    if returncode:
         raise RuntimeError('本地配音或视频合成失败，请检查任务目录中的 render.log。')
 
 
@@ -534,8 +572,13 @@ def render_job(job_id, project):
         (directory / 'speech.json').write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
         (directory / 'project.json').write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding='utf-8')
         job.update(progress=8, message='正在用本机中文语音生成配音…')
-        run_process(['powershell.exe', '-NoProfile', '-NonInteractive', '-File', str(ROOT / 'speech.ps1'),
-                     '-Manifest', str(directory / 'speech.json')], log)
+
+        def speech_progress(done, total):
+            job.update(progress=8 + int(done / total * 12),
+                       message=f'正在生成第 {done} / {total} 段配音…')
+
+        run_streamed(['powershell.exe', '-NoProfile', '-NonInteractive', '-File', str(ROOT / 'speech.ps1'),
+                      '-Manifest', str(directory / 'speech.json')], log, speech_progress, stall=SPEECH_STALL_SECONDS)
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
         for segment in segments:
             with wave.open(segment['path'], 'rb') as audio:

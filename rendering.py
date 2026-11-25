@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 FONT_DIR = Path('C:/Windows/Fonts')
 ASSETS = Path(__file__).resolve().parent / 'assets'
+LOCAL_BOUNDS = (658, 120, 1216, 433)
 SCENE_KINDS = {
     'message': '收到消息', 'call': '陌生来电', 'transfer': '转账风险',
     'verify': '主动核实', 'help': '留证求助', 'tip': '重点提醒',
@@ -181,21 +182,25 @@ def animation_times(start, duration, scene_duration, phases=(0, .28, .58)):
     return [frame / 24 for frame in sorted(frames)]
 
 
-def draw_local_image(im, visual, colors):
-    bounds = (658, 120, 1216, 433)
-    size = (bounds[2] - bounds[0], bounds[3] - bounds[1])
-    with Image.open(ASSETS / f'{visual["imageId"]}.png') as original:
+@lru_cache(maxsize=8)
+def fitted_asset(image_id, fit, focus_x, focus_y, soft):
+    size = (LOCAL_BOUNDS[2] - LOCAL_BOUNDS[0], LOCAL_BOUNDS[3] - LOCAL_BOUNDS[1])
+    with Image.open(ASSETS / f'{image_id}.png') as original:
         source = original.convert('RGB')
-        if visual['fit'] == 'cover':
-            image = ImageOps.fit(source, size, Image.Resampling.LANCZOS,
-                                 centering=(visual['focusX'] / 100, visual['focusY'] / 100))
-        else:
-            fitted = ImageOps.contain(source, size, Image.Resampling.LANCZOS)
-            image = Image.new('RGB', size, colors['soft'])
-            image.paste(fitted, ((size[0] - fitted.width) // 2, (size[1] - fitted.height) // 2))
+    if fit == 'cover':
+        return ImageOps.fit(source, size, Image.Resampling.LANCZOS, centering=(focus_x / 100, focus_y / 100))
+    fitted = ImageOps.contain(source, size, Image.Resampling.LANCZOS)
+    image = Image.new('RGB', size, soft)
+    image.paste(fitted, ((size[0] - fitted.width) // 2, (size[1] - fitted.height) // 2))
+    return image
+
+
+def draw_local_image(im, visual, colors):
+    size = (LOCAL_BOUNDS[2] - LOCAL_BOUNDS[0], LOCAL_BOUNDS[3] - LOCAL_BOUNDS[1])
+    image = fitted_asset(visual['imageId'], visual['fit'], visual['focusX'], visual['focusY'], colors['soft'])
     mask = Image.new('L', size, 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=20, fill=255)
-    im.paste(image, bounds[:2], mask)
+    im.paste(image, LOCAL_BOUNDS[:2], mask)
     d = ImageDraw.Draw(im)
     d.rounded_rectangle((674, 134, 891, 163), radius=7, fill=colors['card'])
     d.text((685, 138), '本地配图 · 仅作情景示意', font=font(16), fill=colors['ink'])
