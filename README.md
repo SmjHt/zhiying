@@ -42,7 +42,8 @@ python -m venv .venv
 .venv\Scripts\python.exe server.py --open
 ```
 
-或直接双击 `启动知映.cmd`（默认使用 `.venv` 并自动打开浏览器）。
+或双击 `配置环境.cmd`：自动挑选可用的 Python 3.10+（会跳过 PATH 里损坏的解释器），
+建好 `.venv` 并装齐依赖；之后双击 `启动知映.cmd` 使用（默认走 `.venv` 并自动打开浏览器）。
 
 服务只监听 `http://127.0.0.1:8765`，可用 `--port` 改端口。
 依赖只有两个：Pillow（画面渲染）与 imageio-ffmpeg（自带 FFmpeg，用于合成 MP4）；
@@ -58,7 +59,7 @@ python -m venv .venv
 ## 项目结构
 
 ```
-zhiying-local/
+zhiying/
 ├─ server.py            # 本地 HTTP 服务：API、输入校验、配音调度、导出任务
 ├─ rendering.py         # Pillow 逐帧渲染：风格库/道具库、动画相位、发光合成、字幕
 ├─ speech.ps1           # Windows System.Speech 离线中文配音
@@ -71,7 +72,8 @@ zhiying-local/
 │  ├─ test_local.py     # 后端 unittest（31 项）
 │  └─ browser-check.cjs # Playwright 浏览器回归（27 项）
 ├─ requirements.txt
-├─ 启动知映.cmd
+├─ 配置环境.cmd          # 一键建 .venv 并安装依赖
+├─ 启动知映.cmd          # 一键启动本地服务
 └─ .gitignore
 ```
 
