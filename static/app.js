@@ -72,7 +72,6 @@ let initializing = true;
 const SAVED_TEXT = '已保存到本机项目库';
 const UNSAVED_TEXT = '尚未保存，请先备份';
 const thumbCache = new Map();
-const auditionCache = new Map();
 const sceneAudio = $('scene-audio');
 
 function normalizeDraft(value) {
@@ -332,16 +331,8 @@ function updateTransport() {
 }
 
 async function loadSceneMedia(index) {
-  const scene = state.scenes[index];
-  const auditionKey = `${state.accessible}:${scene.narration}`;
-  let audition = auditionCache.get(auditionKey);
-  const framesPromise = request('/api/frames', { ...payload(), index }).then((response) => response.json());
-  if (!audition) {
-    audition = await (await request('/api/audition', { narration: scene.narration, accessible: state.accessible })).json();
-    auditionCache.set(auditionKey, audition);
-  }
-  const frames = await framesPromise;
-  return { frames: frames.frames, audioUrl: audition.url, duration: audition.duration };
+  const media = await (await request('/api/frames', { ...payload(), index })).json();
+  return { frames: media.frames, audioUrl: media.audio };
 }
 
 function frameForProgress(frames, progress) {

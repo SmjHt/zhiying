@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import io
 import json
 import os
@@ -8,6 +9,7 @@ import sys
 import threading
 import time
 import unittest
+import wave
 from http.client import HTTPConnection
 from pathlib import Path
 from unittest.mock import patch
@@ -17,9 +19,27 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rendering import (SCENE_KINDS, animation_times, draw_frame, fitted_asset, font, phase_starts,
                        preview_png, split_captions, wrap_text)
-from server import (Handler, ThreadingHTTPServer, ValidationError, cleanup_exports, gc_files, make_draft,
-                    prune_export_intermediates, reap_jobs, run_streamed, scene_frames, store_image,
+from server import (Handler, ThreadingHTTPServer, ValidationError, caption_wav_path, cleanup_exports,
+                    ensure_caption_wavs, quantized_duration, prune_export_intermediates, reap_jobs,
+                    run_streamed, scene_audio, scene_frames, gc_files, make_draft, store_image,
                     suggest_visual, timestamp, trim_by_mtime, validate_project, validate_visual)
+
+
+def stub_scene_audio(narration, accessible):
+    captions = split_captions(narration, accessible)
+    segments = [quantized_duration(len(caption) / 5) for caption in captions]
+    key = hashlib.sha1(f'{accessible}:{narration}'.encode('utf-8')).hexdigest()
+    return {'key': key, 'url': f'/auditions/{key}.wav', 'duration': round(sum(segments), 2),
+            'captions': captions, 'segments': segments}
+
+
+def write_caption_wav(path, seconds, framerate=22050):
+    path.parent.mkdir(exist_ok=True)
+    with wave.open(str(path), 'wb') as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(framerate)
+        audio.writeframes(b'\x01\x00' * int(seconds * framerate))
 
 
 class DraftTests(unittest.TestCase):
@@ -184,6 +204,11 @@ class VisualTests(unittest.TestCase):
 
 
 class AnimationTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch('server.scene_audio', stub_scene_audio)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_animation_times_are_segment_relative_and_bounded(self):
         moments = animation_times(4.0, 3.0, 12.0)
         self.assertEqual(moments[0], 0)
@@ -217,6 +242,11 @@ class AnimationTests(unittest.TestCase):
 
 
 class NoirTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch('server.scene_audio', stub_scene_audio)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_noir_frames_differ_across_progress(self):
         scene = make_draft('收到消息：陌生人发来刷单消息，不要急着相信。', 'noir')[0]
         self.assertEqual(scene['visual']['kind'], 'stack')
@@ -279,6 +309,9 @@ class CleanupTests(unittest.TestCase):
         self.exports = Path(self.tmp.name) / 'exports'
         self.exports.mkdir()
         patcher = patch('server.EXPORTS', self.exports)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch('server.scene_audio', stub_scene_audio)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -409,7 +442,70 @@ class StreamProcessTests(unittest.TestCase):
             run_streamed([sys.executable, '-c', 'raise SystemExit(3)'], self.log, stall=15)
 
 
+class SceneAudioTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.audio = Path(self.tmp.name) / 'auditions'
+        patcher = patch('server.AUDITIONS', self.audio)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_ensure_caption_wavs_batches_missing_and_reuses_cache(self):
+        calls = []
+
+        def fake_streamed(command, log=None, on_progress=None, stall=120):
+            data = json.loads(Path(command[-1]).read_text(encoding='utf-8'))
+            calls.append([segment['text'] for segment in data['segments']])
+            for segment in data['segments']:
+                write_caption_wav(Path(segment['path']), 0.5)
+            return 0
+
+        items = [(text, caption_wav_path(text, -2)) for text in ('甲乙丙。', '丁戊己。', '甲乙丙。')]
+        with patch('server.run_streamed', fake_streamed):
+            ensure_caption_wavs(items, -2)
+            ensure_caption_wavs(items, -2)
+        self.assertEqual(calls, [['甲乙丙。', '丁戊己。']])
+        leftovers = [p.name for p in self.audio.iterdir() if p.name.startswith('speech-')]
+        self.assertEqual(leftovers, [])
+
+    def test_scene_audio_pads_captions_to_export_lengths(self):
+        captions = ['第一条字幕内容。', '第二条字幕内容。']
+        calls = []
+
+        def fake_ensure(items, rate, log=None, on_progress=None):
+            calls.append([text for text, _ in items])
+            for number, (_, path) in enumerate(items):
+                write_caption_wav(path, 1.0 + number)
+
+        with patch('server.split_captions', lambda narration, accessible: list(captions)), \
+                patch('server.ensure_caption_wavs', fake_ensure):
+            media = scene_audio('整段配音文字', True)
+            self.assertEqual(calls, [captions])
+            self.assertEqual(media['captions'], captions)
+            self.assertEqual(media['segments'], [quantized_duration(1.0), quantized_duration(2.0)])
+            self.assertEqual(media['duration'], round(sum(media['segments']), 2))
+            with wave.open(str(self.audio / f"{media['key']}.wav"), 'rb') as audio:
+                self.assertEqual(audio.getnframes(),
+                                 sum(int(round(duration * 22050)) for duration in media['segments']))
+        with patch('server.split_captions', lambda narration, accessible: list(captions)), \
+                patch('server.ensure_caption_wavs', lambda *a, **k: self.fail('cache hit must not resynthesize')):
+            again = scene_audio('整段配音文字', True)
+        self.assertEqual(again['key'], media['key'])
+        self.assertEqual(again['segments'], media['segments'])
+
+    def test_scene_audio_rejects_empty_captions(self):
+        with patch('server.split_captions', lambda narration, accessible: []):
+            with self.assertRaises(ValidationError):
+                scene_audio('空', True)
+
+
 class PreviewCacheTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch('server.scene_audio', stub_scene_audio)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def project(self, narration='核实来电：陌生来电要核实，不要相信安全账户。'):
         scene = make_draft(narration)[0]
         return {'title': '反诈', 'theme': 'warm', 'style': 'illustration', 'accessible': True, 'scenes': [scene]}, scene
@@ -476,6 +572,23 @@ class PreviewCacheTests(unittest.TestCase):
             rebuilt = scene_frames(project, 0)
             self.assertTrue(victim.is_file())
             self.assertEqual(rebuilt['frames'], meta['frames'])
+
+    def test_frames_follow_audio_segments(self):
+        project, _ = self.project()
+        fake = {'key': 'a' * 40, 'url': '/auditions/' + 'a' * 40 + '.wav', 'duration': 6.0,
+                'captions': ['第一段字幕。', '第二段字幕。'], 'segments': [2.0, 4.0]}
+        changed = {**fake, 'segments': [3.0, 3.0]}
+        with tempfile.TemporaryDirectory() as directory, patch('server.PREVIEWS', Path(directory)):
+            with patch('server.scene_audio', lambda narration, accessible: fake):
+                meta = scene_frames(project, 0)
+            self.assertEqual(meta['audio'], fake['url'])
+            self.assertEqual(meta['duration'], 6.0)
+            self.assertIn(0.3333, [frame['at'] for frame in meta['frames']])
+            before = {p.name for p in Path(directory).iterdir()}
+            with patch('server.scene_audio', lambda narration, accessible: changed):
+                rebuilt = scene_frames(project, 0)
+            self.assertEqual(len({p.name for p in Path(directory).iterdir()} - before), 1)
+            self.assertIn(0.5, [frame['at'] for frame in rebuilt['frames']])
 
     def test_reap_jobs_keeps_running_and_recent(self):
         ids = [f'{index:032x}' for index in range(25)]

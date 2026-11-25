@@ -279,7 +279,11 @@ def run_process(command, log, timeout=240):
         raise RuntimeError('本地配音或视频合成失败，请检查任务目录中的 render.log。')
 
 
-def run_streamed(command, log, on_progress=None, stall=120):
+def run_streamed(command, log=None, on_progress=None, stall=120):
+    """Run a subprocess, forwarding stdout lines as they arrive.
+
+    on_progress(done, total) is called for each PROGRESS n/m line.
+    Kills the process when output stalls for `stall` seconds."""
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, creationflags=0x08000000)
     lines = queue.Queue()
@@ -298,8 +302,9 @@ def run_streamed(command, log, on_progress=None, stall=120):
         except queue.Empty:
             process.kill()
             process.wait()
-            with log.open('ab') as handle:
-                handle.write(b''.join(output))
+            if log:
+                with log.open('ab') as handle:
+                    handle.write(b''.join(output))
             raise RuntimeError('本地配音长时间没有进展，已中止。请检查中文语音是否正常，然后重试。')
         if line is None:
             break
@@ -309,38 +314,97 @@ def run_streamed(command, log, on_progress=None, stall=120):
             if matched:
                 on_progress(int(matched.group(1)), int(matched.group(2)))
     returncode = process.wait()
-    with log.open('ab') as handle:
-        handle.write(b''.join(output))
+    if log:
+        with log.open('ab') as handle:
+            handle.write(b''.join(output))
     if returncode:
         raise RuntimeError('本地配音或视频合成失败，请检查任务目录中的 render.log。')
 
 
-def synthesize_wav(text, rate, wav_path, log):
-    manifest = {'rate': rate, 'segments': [{'text': text, 'scene': 0, 'path': str(wav_path)}]}
-    manifest_path = wav_path.with_suffix('.json')
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
-    run_process(['powershell.exe', '-NoProfile', '-NonInteractive', '-File', str(ROOT / 'speech.ps1'),
-                 '-Manifest', str(manifest_path)], log, timeout=120)
+def quantized_duration(seconds):
+    return round((seconds + 0.30) * 24 + 0.5) / 24
 
 
-def audition_scene(narration, accessible):
-    rate = -2 if accessible else 0
-    key = hashlib.sha1(f'{rate}:{narration}'.encode('utf-8')).hexdigest()
-    wav_path = AUDITIONS / f'{key}.wav'
+def caption_wav_path(text, rate):
+    return AUDITIONS / f'{hashlib.sha1(f"{rate}:{text}".encode("utf-8")).hexdigest()}.wav'
+
+
+def ensure_caption_wavs(items, rate, log=None, on_progress=None):
+    """items: list of (caption text, target wav path). Missing captions are synthesized
+    in one PowerShell batch into the shared auditions cache; cached ones are reused."""
+    AUDITIONS.mkdir(exist_ok=True)
     with SPEECH_LOCK:
-        if wav_path.is_file():
-            os.utime(wav_path, None)
-        else:
-            AUDITIONS.mkdir(exist_ok=True)
-            synthesize_wav(narration, rate, wav_path, AUDITIONS / f'{key}.log')
-    with wave.open(str(wav_path), 'rb') as audio:
-        duration = audio.getnframes() / audio.getframerate()
-    return {'url': f'/auditions/{key}.wav', 'duration': round(duration, 2)}
+        pending = {path: text for text, path in items if not path.is_file()}
+        if pending:
+            manifest_path = AUDITIONS / f'speech-{uuid.uuid4().hex}.json'
+            manifest = {'rate': rate, 'segments': [
+                {'text': text, 'scene': 0, 'path': str(path)} for path, text in pending.items()]}
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
+            try:
+                run_streamed(['powershell.exe', '-NoProfile', '-NonInteractive', '-File', str(ROOT / 'speech.ps1'),
+                              '-Manifest', str(manifest_path)], log, on_progress, stall=SPEECH_STALL_SECONDS)
+            finally:
+                manifest_path.unlink(missing_ok=True)
+    for _, path in items:
+        os.utime(path, None)
 
 
-def estimate_segment_duration(caption, accessible):
-    speed = 3.3 if accessible else 4.5
-    return round((len(caption) / speed + 0.30) * 24 + 0.5) / 24
+def scene_audio(narration, accessible):
+    """Per-caption real wavs concatenated (silence-padded to export segment lengths),
+    cached as one scene wav + duration meta so preview and export share one timeline."""
+    rate = -2 if accessible else 0
+    captions = split_captions(narration, accessible)
+    if not captions:
+        raise ValidationError('这一幕没有配音，无法生成预览音轨。')
+    key = hashlib.sha1(json.dumps({'rate': rate, 'captions': captions}, ensure_ascii=False).encode('utf-8')).hexdigest()
+    wav_path = AUDITIONS / f'{key}.wav'
+    meta_path = AUDITIONS / f'{key}.json'
+
+    def cached():
+        try:
+            meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        if not wav_path.is_file() or not meta.get('captions') or not meta.get('segments'):
+            return None
+        os.utime(wav_path, None)
+        os.utime(meta_path, None)
+        return meta
+
+    meta = cached()
+    if meta:
+        return meta
+    with preview_lock('audio:' + key):
+        meta = cached()
+        if meta:
+            return meta
+        items = [(caption, caption_wav_path(caption, rate)) for caption in captions]
+        ensure_caption_wavs(items, rate)
+        params, chunks, durations = None, [], []
+        for _, path in items:
+            with wave.open(str(path), 'rb') as audio:
+                nchannels, sampwidth, framerate, nframes, _, _ = audio.getparams()
+                data = audio.readframes(nframes)
+            if params is None:
+                params = (nchannels, sampwidth, framerate, nframes, 'NONE', 'not compressed')
+            elif (nchannels, sampwidth, framerate) != params[:3]:
+                raise RuntimeError('字幕段音频格式不一致，请重试预览。')
+            duration = quantized_duration(nframes / framerate)
+            target = int(round(duration * framerate))
+            durations.append(duration)
+            chunks.append(data + b'\x00' * max(0, (target - nframes) * nchannels * sampwidth))
+        temp_wav = AUDITIONS / f'{key}.wav.tmp'
+        with wave.open(str(temp_wav), 'wb') as out:
+            out.setparams(params)
+            for chunk in chunks:
+                out.writeframes(chunk)
+        os.replace(temp_wav, wav_path)
+        meta = {'key': key, 'url': f'/auditions/{key}.wav', 'duration': round(sum(durations), 2),
+                'captions': captions, 'segments': durations}
+        temp_meta = AUDITIONS / f'{key}.json.tmp'
+        temp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+        os.replace(temp_meta, meta_path)
+        return meta
 
 
 def preview_lock(key):
@@ -373,9 +437,11 @@ def read_scene_meta(directory, meta_path):
 def scene_frames(project, index):
     scene = project['scenes'][index]
     total = len(project['scenes'])
+    media = scene_audio(scene['narration'], project['accessible'])
     render_fields = {field: scene[field] for field in ('title', 'narration', 'visual')}
     key = hashlib.sha1(json.dumps({'scene': render_fields, 'theme': project['theme'], 'style': project['style'],
-                                   'accessible': project['accessible'], 'index': index, 'total': total},
+                                   'accessible': project['accessible'], 'index': index, 'total': total,
+                                   'audio': {'key': media['key'], 'segments': media['segments']}},
                                   ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
     directory = PREVIEWS / key
     meta_path = directory / 'meta.json'
@@ -386,10 +452,8 @@ def scene_frames(project, index):
         meta = read_scene_meta(directory, meta_path)
         if meta is not None:
             return meta
-        captions = split_captions(scene['narration'], project['accessible'])
         segments, start = [], 0.0
-        for caption in captions:
-            duration = estimate_segment_duration(caption, project['accessible'])
+        for caption, duration in zip(media['captions'], media['segments']):
             segments.append((caption, start, duration))
             start += duration
         scene_duration = start
@@ -404,7 +468,7 @@ def scene_frames(project, index):
                            caption, progress=progress, draft=True, style=project['style']).save(directory / filename)
                 frames.append({'at': round(progress, 4), 'url': f'/previews/{key}/{filename}'})
                 number += 1
-        meta = {'duration': round(scene_duration, 2), 'frames': frames}
+        meta = {'duration': round(scene_duration, 2), 'audio': media['url'], 'frames': frames}
         temp_path = meta_path.with_name('meta.json.tmp')
         temp_path.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
         os.replace(temp_path, meta_path)
@@ -563,13 +627,11 @@ def render_job(job_id, project):
     directory.mkdir()
     log = directory / 'render.log'
     try:
+        rate = -2 if project['accessible'] else 0
         segments = []
         for index, scene in enumerate(project['scenes']):
             for caption in split_captions(scene['narration'], project['accessible']):
-                segments.append({'text': caption, 'scene': index,
-                                 'path': str(directory / f'audio-{len(segments):03d}.wav')})
-        manifest = {'rate': -2 if project['accessible'] else 0, 'segments': segments}
-        (directory / 'speech.json').write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
+                segments.append({'text': caption, 'scene': index, 'cache': caption_wav_path(caption, rate)})
         (directory / 'project.json').write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding='utf-8')
         job.update(progress=8, message='正在用本机中文语音生成配音…')
 
@@ -577,12 +639,14 @@ def render_job(job_id, project):
             job.update(progress=8 + int(done / total * 12),
                        message=f'正在生成第 {done} / {total} 段配音…')
 
-        run_streamed(['powershell.exe', '-NoProfile', '-NonInteractive', '-File', str(ROOT / 'speech.ps1'),
-                      '-Manifest', str(directory / 'speech.json')], log, speech_progress, stall=SPEECH_STALL_SECONDS)
+        ensure_caption_wavs([(segment['text'], segment['cache']) for segment in segments],
+                            rate, log, speech_progress)
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-        for segment in segments:
+        for number, segment in enumerate(segments):
+            segment['path'] = str(directory / f'audio-{number:03d}.wav')
+            shutil.copyfile(segment['cache'], segment['path'])
             with wave.open(segment['path'], 'rb') as audio:
-                segment['duration'] = round((audio.getnframes() / audio.getframerate() + 0.30) * 24 + 0.5) / 24
+                segment['duration'] = quantized_duration(audio.getnframes() / audio.getframerate())
         scene_durations, scene_starts = {}, {}
         elapsed = 0.0
         for segment in segments:
@@ -794,12 +858,6 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(style, str) or style not in STYLES:
                     raise ValidationError('请选择有效的渲染风格库。')
                 return self.json_response({'scenes': make_draft(data.get('source'), style)})
-            if path == '/api/audition':
-                narration = checked_text(data.get('narration'), '配音', 300)
-                accessible = data.get('accessible', True)
-                if not isinstance(accessible, bool):
-                    raise ValidationError('适老模式参数不正确。')
-                return self.json_response(audition_scene(narration, accessible))
             if path == '/api/frames':
                 project = validate_project(data)
                 index = data.get('index', 0)
