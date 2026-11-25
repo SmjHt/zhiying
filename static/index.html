@@ -7,6 +7,7 @@
   <title>知映 · 本地科普视频工作台</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
+  <script src="/project-store.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -36,8 +37,8 @@
       <div class="hero-note"><span class="note-kicker">让善意，有画面</span><div class="note-art"><span class="paper-mini"><svg class="icon"><use href="#i-file"/></svg></span><span class="dotted-line"></span><span class="film-mini"><svg class="icon"><use href="#i-play"/></svg></span></div><span>不用剪辑经验，认真核对就好。</span></div>
     </section>
 
-    <section class="workspace" aria-label="科普视频制作工作台">
-      <div class="workspace-bar"><div class="workspace-label"><svg class="icon"><use href="#i-film"/></svg><strong>新建科普短片</strong><span class="small-badge">反诈宣传</span></div><span id="save-status" class="save-status">草稿保存在当前浏览器</span></div>
+    <section id="workspace" class="workspace" aria-label="科普视频制作工作台">
+      <div class="workspace-bar"><div class="workspace-label"><svg class="icon"><use href="#i-film"/></svg><strong>科普短片工作台</strong><span class="small-badge">反诈宣传</span></div><span id="save-status" class="save-status">尚未保存，请先备份</span><div class="workspace-actions"><button id="project-save" class="button secondary" type="button">保存项目</button><button id="library-open" class="button secondary" type="button">项目库</button></div></div>
       <nav class="steps" aria-label="制作步骤">
         <button class="step active" id="step-1" data-step="1"><span class="step-number">01</span><span><strong>整理资料</strong><small>告诉我们，你想传递什么</small></span><svg class="icon"><use href="#i-arrow"/></svg></button>
         <button class="step" id="step-2" data-step="2"><span class="step-number">02</span><span><strong>核对分镜</strong><small>让每一句表达准确、易懂</small></span><svg class="icon"><use href="#i-arrow"/></svg></button>
@@ -139,10 +140,17 @@
         </div></aside>
       </div>
     </section>
-    <footer><span><strong>知映</strong> 让有用的知识，被更多人看见。</span><span>本地原型 v0.4 <i>·</i> 用技术传递善意</span></footer>
+    <section id="project-library" class="panel library-panel" hidden aria-label="本机项目库">
+      <div class="section-heading"><div><h2>本机项目库</h2><p>多个短片项目保存在当前浏览器，可备份带走、导入恢复。</p></div><span class="section-index" id="library-count">0 个项目</span></div>
+      <div class="library-bar"><span class="library-current">当前：<strong id="current-project-name">未打开项目</strong></span><div class="library-actions"><button id="workspace-open" class="button secondary" type="button">返回工作台</button><button id="project-new" class="button primary" type="button">新建项目</button><button id="project-import-button" class="button secondary" type="button">导入备份</button><input id="project-import" type="file" accept=".zhiying.json,application/json" hidden></div></div>
+      <div id="library-error" class="library-error" hidden role="alert"><p id="library-error-message"></p><div class="library-actions"><button id="library-retry" class="button secondary" type="button">重试</button><button id="project-rescue" class="button secondary" type="button">下载未保存草稿</button></div></div>
+      <p id="library-empty" class="library-empty" hidden>还没有项目。点击“新建项目”开始，或导入一份备份。</p>
+      <div id="library-list" class="library-list"></div>
+    </section>
+    <footer><span><strong>知映</strong> 让有用的知识，被更多人看见。</span><span>本地原型 v0.5 <i>·</i> 用技术传递善意</span></footer>
   </main>
 
   <div id="toast" class="toast" role="alert" hidden></div>
-  <dialog id="help-dialog"><div class="dialog-heading"><h2>从资料到短片，只需三步</h2><button id="help-close" class="round-button" aria-label="关闭使用指南">×</button></div><ol><li><strong>整理资料</strong><p>粘贴已核实的反诈资料，或载入演示示例；分段写清要点，并自主选择渲染风格库（浅色插画 / 夜色发光）。</p></li><li><strong>核对分镜</strong><p>本地规则拆分原文并按关键词推荐道具，不核查事实。可在当前风格库中自主更换每幕道具、编辑道具参数（步骤、百分比、票据条目、标红关键词等）、导入本机图片并调整取景；在时间轴上拖动卡片或前移后移调整顺序后需重新核对全部内容。画面会随配音逐条呈现并高亮风险。</p></li><li><strong>试听与导出</strong><p>可逐幕试听本机配音、连续预览动态草稿；确认后用 Windows 离线中文语音和本机 FFmpeg 制作真实 MP4，完成后可播放、下载视频和字幕。</p></li></ol><div class="quiet-note">草稿保存在当前浏览器，图片副本保存在 assets 目录，视频保存在 exports 目录；均不对外上传或发布。恢复插画或清空草稿不会删除本地素材和成片。</div><button id="clear-draft" class="text-button danger">清空浏览器草稿（不会删除已导出的视频）</button></dialog>
+  <dialog id="help-dialog"><div class="dialog-heading"><h2>从资料到短片，只需三步</h2><button id="help-close" class="round-button" aria-label="关闭使用指南">×</button></div><ol><li><strong>整理资料</strong><p>粘贴已核实的反诈资料，或载入演示示例；分段写清要点，并自主选择渲染风格库（浅色插画 / 夜色发光）。</p></li><li><strong>核对分镜</strong><p>本地规则拆分原文并按关键词推荐道具，不核查事实。可在当前风格库中自主更换每幕道具、编辑道具参数（步骤、百分比、票据条目、标红关键词等）、导入本机图片并调整取景；在时间轴上拖动卡片或前移后移调整顺序后需重新核对全部内容。画面会随配音逐条呈现并高亮风险。</p></li><li><strong>试听与导出</strong><p>可逐幕试听本机配音、连续预览动态草稿；确认后用 Windows 离线中文语音和本机 FFmpeg 制作真实 MP4，完成后可播放、下载视频和字幕。</p></li></ol><div class="quiet-note">项目保存在当前浏览器的本机项目库（IndexedDB），图片副本同时保存在 assets 目录，视频保存在 exports 目录；均不对外上传或发布。清空草稿只影响当前项目，不会删除本地素材和成片。</div><button id="clear-draft" class="text-button danger">清空当前项目草稿（不会删除已导出的视频）</button></dialog>
 </body>
 </html>

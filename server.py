@@ -469,7 +469,7 @@ class Handler(BaseHTTPRequestHandler):
             if not filename.is_file():
                 return self.json_response({'error': '预览画面不存在。'}, 404)
             return self.send_bytes(filename.read_bytes(), 'image/png')
-        static_files = {'/': 'index.html', '/app.js': 'app.js', '/styles.css': 'styles.css', '/favicon.svg': 'favicon.svg'}
+        static_files = {'/': 'index.html', '/app.js': 'app.js', '/project-store.js': 'project-store.js', '/styles.css': 'styles.css', '/favicon.svg': 'favicon.svg'}
         if path not in static_files:
             return self.json_response({'error': '找不到这个页面。'}, 404)
         filename = ROOT / 'static' / static_files[path]

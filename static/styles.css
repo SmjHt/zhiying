@@ -20,3 +20,23 @@
 .timeline-card[aria-disabled=true]{opacity:.5;cursor:not-allowed}
 @media(max-width:760px){.timeline-card{flex-basis:118px}.preview-transport{gap:10px}#playback-status{margin-left:0;width:100%}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+[hidden]{display:none!important}
+.workspace-actions{display:flex;gap:8px;align-items:center}
+.workspace-actions .button{padding:8px 14px;font-size:12px}
+.library-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px 27px;border-bottom:1px solid var(--line)}
+.library-current{font-size:12px;color:#6d7a6d}
+.library-current strong{color:#2c3a2e}
+.library-actions{display:flex;gap:8px;flex-wrap:wrap}
+.library-error{margin:16px 27px;padding:14px 16px;border:1px solid #d8b09c;background:#fbf1ea;border-radius:12px}
+.library-error p{margin:0 0 10px;font-size:12px;color:#8a5a44;line-height:1.6}
+.library-empty{padding:26px 27px;font-size:13px;color:#7d8a7d}
+.library-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;padding:18px 27px}
+.project-card{border:1px solid var(--line);border-radius:14px;padding:14px 16px;background:#fff;display:flex;flex-direction:column;gap:8px}
+.project-card-current{border-color:#7fa083;box-shadow:0 0 0 2px rgba(127,160,131,.25)}
+.project-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.project-card-title{font-size:14px;line-height:1.45;word-break:break-all;color:#2c3a2e}
+.library-current-label{flex:none;font-size:10px;color:#48774e;background:#eef4ec;border-radius:999px;padding:3px 8px}
+.project-card-meta{font-size:11px;color:#8a987a}
+.project-card-actions{display:flex;gap:12px;flex-wrap:wrap;border-top:1px dashed var(--line);padding-top:8px}
+.project-card-actions .danger{margin-top:0}
+@media(max-width:760px){.workspace-bar{height:auto;flex-wrap:wrap;gap:8px;padding:10px 16px}.library-bar{padding:12px 16px}.library-list{grid-template-columns:1fr;padding:14px 16px}.library-error{margin:12px 16px}.library-empty{padding:18px 16px}}

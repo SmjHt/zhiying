@@ -72,7 +72,19 @@ const check = (label) => { checks.push(label); console.log(`PASS ${label}`); };
       const image = document.getElementById('preview-image');
       return !screen.classList.contains('loading') && !screen.classList.contains('invalid') && image.complete && image.naturalWidth === 1280;
     });
-    const draftValue = () => page.evaluate(() => JSON.parse(localStorage.getItem('zhiying-local-draft-v1')));
+    const draftValue = async () => {
+      await page.waitForFunction(() => document.getElementById('save-status').textContent === '已保存到本机项目库');
+      return page.evaluate(async () => (await ProjectStore.getActive()).draft);
+    };
+    const waitJobCommitted = async () => {
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        const id = await page.evaluate(async () => ((await ProjectStore.getActive())?.draft.jobId) || '');
+        if (/^[a-f0-9]{32}$/.test(id)) return;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error('Timed out waiting for the export job id to be committed');
+    };
     assert.deepEqual((await draftValue()).scenes.map((scene) => scene.visual.kind), ['message', 'transfer', 'transfer', 'verify', 'help']);
     await page.locator('#tab-visual').click();
     const scenarioFrames = new Set();
@@ -117,7 +129,10 @@ const check = (label) => { checks.push(label); console.log(`PASS ${label}`); };
     assert.equal(await page.locator('.timeline-card').count(), 5);
     check('Visual timeline shows five scene thumbnails');
 
-    const orderTitles = () => page.evaluate(() => JSON.parse(localStorage.getItem('zhiying-local-draft-v1')).scenes.map((s) => s.title));
+    const orderTitles = async () => {
+      await page.waitForFunction(() => document.getElementById('save-status').textContent === '已保存到本机项目库');
+      return page.evaluate(async () => (await ProjectStore.getActive()).draft.scenes.map((s) => s.title));
+    };
     const beforeDrag = await orderTitles();
     await page.locator('.timeline-card').first().focus();
     await page.keyboard.press('ArrowRight');
@@ -245,6 +260,7 @@ const check = (label) => { checks.push(label); console.log(`PASS ${label}`); };
     assert.match(await page.locator('#review-count').textContent(), /5 \/ 5/);
     await page.locator('.scene-item').first().click();
     await page.screenshot({ path: path.join(shots, '知映-v03-03-分镜核对.png'), fullPage: true });
+    await page.waitForFunction(() => document.getElementById('save-status').textContent === '已保存到本机项目库');
     await page.reload();
     await page.locator('#panel-2').waitFor({ state: 'visible' });
     assert.match(await page.locator('#review-count').textContent(), /5 \/ 5/);
@@ -253,7 +269,7 @@ const check = (label) => { checks.push(label); console.log(`PASS ${label}`); };
     await page.locator('#to-export').click();
     await page.locator('#export-button').click();
     assert.equal(await page.locator('#back-scenes').isDisabled(), true);
-    await page.waitForFunction(() => /^[a-f0-9]{32}$/.test(JSON.parse(localStorage.getItem('zhiying-local-draft-v1')).jobId || ''));
+    await waitJobCommitted();
     await page.reload();
     await page.locator('#panel-3').waitFor({ state: 'visible' });
     await page.locator('#export-success').waitFor({ state: 'visible', timeout: 240000 });
@@ -296,7 +312,7 @@ const check = (label) => { checks.push(label); console.log(`PASS ${label}`); };
     }
     check('MP4, SRT and script downloads complete successfully');
     await page.screenshot({ path: path.join(shots, '知映-v03-04-成片导出.png'), fullPage: true });
-    const draft = await page.evaluate(() => JSON.parse(localStorage.getItem('zhiying-local-draft-v1')));
+    const draft = await draftValue();
 
     await page.locator('#back-scenes').click();
     await page.locator('#tab-visual').click();
@@ -389,7 +405,7 @@ const check = (label) => { checks.push(label); console.log(`PASS ${label}`); };
     }
     await page.locator('#to-export').click();
     await page.locator('#export-button').click();
-    await page.waitForFunction(() => /^[a-f0-9]{32}$/.test(JSON.parse(localStorage.getItem('zhiying-local-draft-v1')).jobId || ''));
+    await waitJobCommitted();
     await page.reload();
     await page.locator('#panel-3').waitFor({ state: 'visible' });
     await page.locator('#export-success').waitFor({ state: 'visible', timeout: 240000 });

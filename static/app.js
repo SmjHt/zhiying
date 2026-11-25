@@ -51,45 +51,174 @@ function convertVisual(visual, style) {
   return fresh;
 }
 const DEMO = { title: '一条消息，要多一分警惕', narration: '陌生人的赚钱邀请，不要急着相信。', source: '本地演示画面', reviewed: false, visual: { kind: 'message', text: '收到陌生人的兼职邀请', imageId: null, imageName: '', fit: 'cover', focusX: 50, focusY: 50 } };
-let state = { title: '守住钱袋子 · 社区反诈提醒', source: '', generatedSource: '', theme: 'warm', style: 'illustration', accessible: true, scenes: [], activeScene: 0, step: 1, jobId: null, result: null };
+let state = { title: '守住钱袋子 · 社区反诈提醒', source: '', generatedSource: '', sourceInfo: { name: '', url: '', publishedAt: '' }, aspectRatio: '16:9', theme: 'warm', style: 'illustration', accessible: true, scenes: [], activeScene: 0, step: 1, jobId: null, result: null };
 let busy = false;
 let previewSequence = 0;
 let previewUrl = null;
 let previewTimer;
 let toastTimer;
 let pollTimer;
-let saveAvailable = true;
 let playback = null;
 let playbackRaf = 0;
 let dragIndex = null;
+let activeId = null;
+let activeRevision = null;
+let dirty = false;
+let storeState = 'loading';
+let saveError = null;
+let saveTimer;
+let saving = null;
+let initializing = true;
+const SAVED_TEXT = '已保存到本机项目库';
+const UNSAVED_TEXT = '尚未保存，请先备份';
 const thumbCache = new Map();
 const auditionCache = new Map();
 const sceneAudio = $('scene-audio');
 
-try {
-  const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-  if (saved && typeof saved.title === 'string' && typeof saved.source === 'string' && ['warm', 'teal', 'bold'].includes(saved.theme) && typeof saved.accessible === 'boolean' && Array.isArray(saved.scenes) && saved.scenes.length <= 8 && saved.scenes.every((s) => s && ['title', 'narration', 'source'].every((key) => typeof s[key] === 'string'))) {
-    state = { ...state, ...saved };
-    if (!STYLES[state.style]) state.style = 'illustration';
-    for (const scene of state.scenes) {
-      if (!scene.visual) {
-        scene.visual = defaultVisual(state.style === 'noir' ? 'title' : 'tip', scene.title, state.style);
-        scene.reviewed = false;
-        state.result = null;
-      } else {
-        const converted = convertVisual(scene.visual, state.style);
-        if (converted.kind !== scene.visual.kind) scene.reviewed = false;
-        scene.visual = converted;
-      }
+function normalizeDraft(value) {
+  const draft = { title: '守住钱袋子 · 社区反诈提醒', source: '', generatedSource: '', sourceInfo: { name: '', url: '', publishedAt: '' }, aspectRatio: '16:9', theme: 'warm', style: 'illustration', accessible: true, scenes: [], activeScene: 0, step: 1, jobId: null, result: null, ...value };
+  draft.title = String(draft.title || '').slice(0, 40);
+  draft.source = String(draft.source || '');
+  draft.generatedSource = String(draft.generatedSource || '');
+  if (!['warm', 'teal', 'bold'].includes(draft.theme)) draft.theme = 'warm';
+  if (!STYLES[draft.style]) draft.style = 'illustration';
+  if (!['16:9', '9:16'].includes(draft.aspectRatio)) draft.aspectRatio = '16:9';
+  if (!draft.sourceInfo || typeof draft.sourceInfo !== 'object') draft.sourceInfo = { name: '', url: '', publishedAt: '' };
+  draft.accessible = Boolean(draft.accessible);
+  draft.scenes = Array.isArray(draft.scenes) ? draft.scenes.slice(0, 8) : [];
+  for (const scene of draft.scenes) {
+    scene.title = String(scene.title || '');
+    scene.narration = String(scene.narration || '');
+    scene.source = String(scene.source || '');
+    if (!scene.visual) {
+      scene.visual = defaultVisual(draft.style === 'noir' ? 'title' : 'tip', scene.title, draft.style);
+      scene.reviewed = false;
+      draft.result = null;
+    } else {
+      const converted = convertVisual(scene.visual, draft.style);
+      if (converted.kind !== scene.visual.kind) scene.reviewed = false;
+      scene.visual = converted;
     }
-    state.step = [1, 2, 3].includes(state.step) ? state.step : 1;
-    state.activeScene = Math.max(0, Math.min(Number(state.activeScene) || 0, state.scenes.length - 1));
-    if (!state.scenes.length || state.source !== state.generatedSource) state.step = 1;
-    if (!/^[a-f0-9]{32}$/.test(state.jobId || '')) state.jobId = null;
-    if (state.result && !/^\/files\/[a-f0-9]{32}\/video\.mp4$/.test(state.result.video || '')) state.result = null;
+    scene.reviewed = Boolean(scene.reviewed);
   }
-} catch {
-  saveAvailable = false;
+  draft.step = [1, 2, 3].includes(draft.step) ? draft.step : 1;
+  draft.activeScene = Math.max(0, Math.min(Number(draft.activeScene) || 0, draft.scenes.length - 1));
+  if (!draft.scenes.length || draft.source !== draft.generatedSource) draft.step = 1;
+  if (!/^[a-f0-9]{32}$/.test(draft.jobId || '')) draft.jobId = null;
+  if (draft.result && !/^\/files\/[a-f0-9]{32}\/video\.mp4$/.test(draft.result.video || '')) draft.result = null;
+  return draft;
+}
+
+function randomHex32() { return crypto.randomUUID().replaceAll('-', ''); }
+
+async function blobToBase64(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+function base64ToBytes(data) {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function resolveImages() {
+  const ids = [...new Set(state.scenes.map((scene) => scene.visual.imageId).filter(Boolean))];
+  let changed = false;
+  for (const id of ids) {
+    const response = await fetch(`/assets/${id}.png`);
+    if (response.ok) {
+      if (storeState === 'ready' && !(await ProjectStore.getAsset(id))) await ProjectStore.putAsset(id, await response.blob());
+      continue;
+    }
+    const blob = storeState === 'ready' ? await ProjectStore.getAsset(id) : null;
+    if (blob) {
+      const asset = await (await request('/api/assets', { image: await blobToBase64(blob) })).json();
+      await ProjectStore.putAsset(asset.id, blob);
+      for (const scene of state.scenes) if (scene.visual.imageId === id) scene.visual.imageId = asset.id;
+      changed = true;
+    } else {
+      for (const scene of state.scenes) if (scene.visual.imageId === id) Object.assign(scene.visual, { imageId: null, imageName: '' });
+      changed = true;
+    }
+  }
+  if (changed) await flushSave();
+}
+
+async function migrateOrLoad() {
+  let legacyRaw;
+  try { legacyRaw = localStorage.getItem(STORAGE_KEY); }
+  catch {
+    // 旧键读取被禁用时，若项目库已有内容（例如迁移已完成），直接从项目库恢复。
+    const active = await ProjectStore.getActive();
+    if (active) {
+      activeId = active.id;
+      activeRevision = active.revision;
+      state = normalizeDraft(active.draft);
+      storeState = 'ready';
+      saveError = null;
+      return;
+    }
+    storeState = 'legacy-failed';
+    saveError = { kind: 'legacy', message: '旧草稿读取失败，项目库保持为空；旧草稿仍保留在浏览器中，可重试迁移。' };
+    return;
+  }
+  if (legacyRaw !== null) {
+    let legacy;
+    try {
+      legacy = JSON.parse(legacyRaw);
+      if (!legacy || typeof legacy !== 'object') throw new Error('invalid legacy draft');
+    } catch {
+      storeState = 'legacy-failed';
+      saveError = { kind: 'legacy', message: '旧草稿读取失败，项目库保持为空；旧草稿仍保留在浏览器中，可重试迁移。' };
+      return;
+    }
+    const record = await ProjectStore.create(normalizeDraft(legacy), { activate: true });
+    localStorage.removeItem(STORAGE_KEY);
+    activeId = record.id;
+    activeRevision = record.revision;
+    state = normalizeDraft(record.draft);
+    storeState = 'ready';
+    saveError = null;
+    return;
+  }
+  const active = await ProjectStore.getActive();
+  if (active) {
+    activeId = active.id;
+    activeRevision = active.revision;
+    state = normalizeDraft(active.draft);
+  } else {
+    const record = await ProjectStore.create(normalizeDraft({}), { activate: true });
+    activeId = record.id;
+    activeRevision = record.revision;
+    state = normalizeDraft(record.draft);
+  }
+  storeState = 'ready';
+  saveError = null;
+}
+
+async function initStore() {
+  try { await ProjectStore.open(); }
+  catch {
+    storeState = 'unopened';
+    saveError = { kind: 'open', message: '无法打开本机项目库（存储被禁用或浏览器限制）；输入的内容仍保留在内存中，可下载救援备份。' };
+  }
+  if (storeState !== 'unopened') {
+    try { await migrateOrLoad(); }
+    catch {
+      storeState = 'legacy-failed';
+      saveError = { kind: 'quota', message: '浏览器存储空间不足或存储被禁用，旧草稿迁移未完成；旧草稿仍保留，可重试。' };
+    }
+  }
+  if (storeState === 'ready') {
+    await resolveImages();
+    dirty = false;
+    saveError = null;
+  }
+  initializing = false;
 }
 
 function notify(message, success = false) {
@@ -100,15 +229,56 @@ function notify(message, success = false) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 6000);
 }
 
+function refreshStatus() {
+  $('save-status').textContent = storeState === 'ready' && !dirty && !saveError ? SAVED_TEXT : UNSAVED_TEXT;
+}
+
+function refreshEntrances() {
+  const blocked = busy || initializing;
+  for (const id of ['library-open', 'workspace-open', 'project-new', 'project-import-button', 'library-retry', 'project-rescue']) $(id).disabled = blocked;
+  $('project-save').disabled = blocked || !activeId || storeState !== 'ready';
+  document.querySelectorAll('[data-project-action]').forEach((button) => { button.disabled = blocked; });
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  if (storeState !== 'ready' || !activeId) return;
+  saveTimer = setTimeout(() => { flushSave(); }, 300);
+}
+
 function save() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    $('save-status').textContent = '已保存在当前浏览器';
-    saveAvailable = true;
-  } catch {
-    $('save-status').textContent = '浏览器存储不可用，请勿刷新';
-    saveAvailable = false;
-  }
+  dirty = true;
+  refreshStatus();
+  scheduleSave();
+}
+
+function flushSave() {
+  clearTimeout(saveTimer);
+  if (storeState !== 'ready' || !activeId) { refreshStatus(); return Promise.resolve(false); }
+  // 串行排队：上一次落盘期间的修改不能丢弃，必须接着再存一次。
+  const attempt = async () => {
+    try {
+      const record = await ProjectStore.save(activeId, state, activeRevision);
+      activeRevision = record.revision;
+      dirty = false;
+      saveError = null;
+      refreshStatus();
+      refreshEntrances();
+      if (!$('project-library').hidden) renderLibrary();
+      return true;
+    } catch (error) {
+      dirty = true;
+      saveError = error.code === 'conflict' || error.code === 'missing'
+        ? { kind: 'conflict', message: '其他标签页修改或删除了当前项目，已保存内容未被覆盖；未保存的修改仍在内存中，可下载救援备份后刷新恢复。' }
+        : { kind: 'quota', message: '浏览器存储空间不足或存储被禁用，修改仍保留在内存中；可下载救援备份，释放空间后重试。' };
+      refreshStatus();
+      refreshEntrances();
+      if (!$('project-library').hidden) renderLibrary();
+      return false;
+    }
+  };
+  saving = (saving || Promise.resolve()).then(attempt, attempt);
+  return saving;
 }
 
 async function request(path, payload) {
@@ -272,6 +442,18 @@ function toggleAudition() {
   playScene(state.activeScene, 'audition');
 }
 
+function clearResultDom() {
+  const video = $('result-video');
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  video.hidden = true;
+  $('export-success').hidden = true;
+  for (const id of ['download-video', 'download-subtitles', 'download-script']) $(id).removeAttribute('href');
+  $('preview-image').hidden = false;
+  $('preview-title').textContent = '画面预览';
+}
+
 function invalidateResult() {
   stopPlayback();
   if (state.result) {
@@ -282,6 +464,7 @@ function invalidateResult() {
     $('result-video').load();
   }
   $('export-success').hidden = true;
+  for (const id of ['download-video', 'download-subtitles', 'download-script']) $(id).removeAttribute('href');
   $('result-video').hidden = true;
   $('preview-image').hidden = false;
   $('preview-title').textContent = '画面预览';
@@ -745,8 +928,10 @@ function setBusy(value) {
   busy = value;
   if (value) stopPlayback();
   document.querySelectorAll('.workspace button, .workspace input, .workspace textarea, #clear-draft').forEach((element) => { element.disabled = value; });
+  document.querySelectorAll('[data-project-action]').forEach((button) => { button.disabled = value; });
   updateNavigation();
   updateTransport();
+  refreshEntrances();
   if (!value) {
     if (state.scenes.length) { renderVisualEditor(); renderTimeline(); }
     renderExport();
@@ -791,7 +976,6 @@ $('source-input').value = state.source;
 $('project-title').value = state.title;
 $('source-count').textContent = state.source.length;
 $('accessible-mode').checked = state.accessible;
-if (!saveAvailable) $('save-status').textContent = '浏览器存储不可用，请勿刷新';
 
 $('source-input').addEventListener('input', (event) => {
   state.source = event.target.value;
@@ -801,7 +985,8 @@ $('source-input').addEventListener('input', (event) => {
   save();
 });
 $('project-title').addEventListener('input', (event) => {
-  state.title = event.target.value;
+  state.title = event.target.value.slice(0, 40);
+  event.target.value = state.title;
   invalidateResult();
   save();
 });
@@ -908,6 +1093,7 @@ $('local-image').addEventListener('change', async (event) => {
       reader.readAsDataURL(file);
     });
     const asset = await (await request('/api/assets', { image })).json();
+    if (storeState === 'ready') await ProjectStore.putAsset(asset.id, file);
     Object.assign(scene.visual, { imageId: asset.id, imageName: file.name.slice(0, 120), fit: 'cover', focusX: 50, focusY: 50 });
     markSceneChanged();
     notify('图片副本已保存在本机，可调整取景；请重新核对这一幕。', true);
@@ -1024,22 +1210,333 @@ $('to-export').addEventListener('click', () => setStep(3));
 $('back-scenes').addEventListener('click', () => setStep(2));
 $('help-open').addEventListener('click', () => $('help-dialog').showModal());
 $('help-close').addEventListener('click', () => $('help-dialog').close());
-$('clear-draft').addEventListener('click', () => {
-  if (busy || !confirm('清空当前浏览器里的资料和分镜草稿？不会删除已导出的视频。')) return;
-  localStorage.removeItem(STORAGE_KEY);
-  location.reload();
+$('clear-draft').addEventListener('click', async () => {
+  if (busy || !confirm('清空当前项目里的资料和分镜草稿？不会删除已导出的视频，也不会影响其他项目。')) return;
+  state.source = '';
+  state.generatedSource = '';
+  state.scenes = [];
+  state.activeScene = 0;
+  state.step = 1;
+  state.jobId = null;
+  state.result = null;
+  invalidateResult();
+  applyStateToUi();
+  dirty = true;
+  refreshStatus();
+  $('help-dialog').close();
+  await flushSave();
 });
 $('result-video').addEventListener('error', () => notify('成片无法载入，请确认本地服务运行中且导出文件未被移动。'));
 
-setEditorTab('script');
-renderStyle();
-renderTheme();
-renderEditor();
-updateNavigation();
-renderExport();
-schedulePreview();
-if (state.jobId) {
-  state.step = 3;
-  setBusy(true);
-  pollJob();
+function applyStateToUi() {
+  $('source-input').value = state.source;
+  $('project-title').value = state.title;
+  $('source-count').textContent = state.source.length;
+  $('accessible-mode').checked = state.accessible;
+  renderStyle();
+  renderTheme();
+  renderSceneList();
+  if (state.scenes.length) renderEditor();
+  else {
+    $('scene-title').value = '';
+    $('scene-narration').value = '';
+    $('source-quote').textContent = '';
+    $('scene-reviewed').checked = false;
+    $('narration-count').textContent = '0 / 300 字';
+  }
+  updateNavigation();
+  renderExport();
+  schedulePreview();
+  showOutputIfReady();
 }
+
+async function renderLibrary() {
+  const rows = storeState === 'ready' ? await ProjectStore.list() : [];
+  $('library-count').textContent = `${rows.length} 个项目`;
+  $('library-empty').hidden = rows.length > 0;
+  $('current-project-name').textContent = activeId ? (rows.find((row) => row.id === activeId)?.draft.title || '未命名短片') : '未打开项目';
+  const hasError = storeState !== 'ready' || Boolean(saveError);
+  $('library-error').hidden = !hasError;
+  $('library-error-message').textContent = saveError ? saveError.message : '项目库暂时不可用，请重试。';
+  const list = $('library-list');
+  list.replaceChildren();
+  for (const row of rows) {
+    const card = document.createElement('article');
+    card.className = `project-card${row.id === activeId ? ' project-card-current' : ''}`;
+    card.dataset.projectId = row.id;
+    const head = document.createElement('div');
+    head.className = 'project-card-head';
+    const title = document.createElement('strong');
+    title.className = 'project-card-title';
+    title.textContent = row.draft.title || '未命名短片';
+    head.append(title);
+    if (row.id === activeId) {
+      const current = document.createElement('span');
+      current.className = 'library-current-label';
+      current.textContent = '当前项目';
+      head.append(current);
+    }
+    const meta = document.createElement('small');
+    meta.className = 'project-card-meta';
+    meta.textContent = `${row.draft.scenes.length} 幕 · ${STYLES[row.draft.style] || '浅色插画'} · 更新于 ${new Date(row.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+    const actions = document.createElement('div');
+    actions.className = 'project-card-actions';
+    for (const [verb, label] of [['open', '打开'], ['duplicate', '复制'], ['backup', '备份'], ['delete', '删除']]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = verb === 'delete' ? 'text-button danger' : 'text-button';
+      button.dataset.projectAction = verb;
+      button.textContent = label;
+      button.disabled = busy || initializing;
+      button.addEventListener('click', () => projectAction(verb, row.id));
+      actions.append(button);
+    }
+    card.append(head, meta, actions);
+    list.append(card);
+  }
+  refreshEntrances();
+}
+
+async function openLibrary() {
+  if (busy || initializing) return;
+  stopPlayback();
+  $('result-video').pause();
+  await flushSave();
+  await renderLibrary();
+  $('workspace').hidden = true;
+  $('project-library').hidden = false;
+}
+
+function closeLibrary() {
+  $('project-library').hidden = true;
+  $('workspace').hidden = false;
+}
+
+function guardSwitch() {
+  if (storeState !== 'ready') { notify('请先重试打开项目库。'); return false; }
+  if (dirty) { notify('当前修改尚未保存，请先保存或下载救援备份。'); return false; }
+  return true;
+}
+
+async function projectAction(verb, id) {
+  if (busy || initializing) return;
+  if (storeState !== 'ready') return notify('请先重试打开项目库。');
+  if (verb === 'backup') return backupProject(id);
+  if (!guardSwitch()) return;
+  if (verb === 'open') return openProject(id);
+  if (verb === 'duplicate') return duplicateProject(id);
+  if (verb === 'delete') return deleteProject(id);
+}
+
+async function openProject(id) {
+  const record = await ProjectStore.get(id);
+  if (!record) return notify('该项目已不存在，请刷新项目库。');
+  stopPlayback();
+  clearResultDom();
+  await ProjectStore.activate(id);
+  activeId = id;
+  activeRevision = record.revision;
+  state = normalizeDraft(record.draft);
+  await resolveImages();
+  dirty = false;
+  saveError = null;
+  closeLibrary();
+  applyStateToUi();
+  refreshStatus();
+  refreshEntrances();
+}
+
+async function duplicateProject(id) {
+  const record = await ProjectStore.get(id);
+  if (!record) return;
+  const copy = normalizeDraft(structuredClone(record.draft));
+  copy.title = `${copy.title.slice(0, 35)} · 副本`;
+  copy.jobId = null;
+  copy.result = null;
+  copy.scenes.forEach((scene) => { scene.reviewed = false; });
+  await ProjectStore.create(copy);
+  await renderLibrary();
+  notify('已创建独立副本，核对状态已重置。', true);
+}
+
+async function deleteProject(id) {
+  const record = await ProjectStore.get(id);
+  if (!record) return;
+  if (!confirm(`删除项目「${record.draft.title}」？删除后无法撤销，未被其他项目引用的图片副本也会清理。`)) return;
+  await ProjectStore.remove(id);
+  if (activeId === id) {
+    activeId = null;
+    activeRevision = null;
+    state = normalizeDraft({});
+    dirty = false;
+    saveError = null;
+    stopPlayback();
+    clearResultDom();
+    applyStateToUi();
+  }
+  await renderLibrary();
+  refreshStatus();
+  refreshEntrances();
+  notify('项目已从当前浏览器删除。', true);
+}
+
+async function buildBundle(draft) {
+  const clean = normalizeDraft(structuredClone(draft));
+  clean.jobId = null;
+  clean.result = null;
+  const ids = [...new Set(clean.scenes.map((scene) => scene.visual.imageId).filter(Boolean))];
+  const assets = [];
+  for (const id of ids) {
+    const blob = await ProjectStore.getAsset(id);
+    if (blob) assets.push({ id, mime: blob.type, data: await blobToBase64(blob) });
+  }
+  return { format: 'zhiying-project', version: 1, draft: clean, assets };
+}
+
+function downloadBundle(bundle) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(bundle)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${(bundle.draft.title || '知映项目').slice(0, 40)}.zhiying.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+async function backupProject(id) {
+  const record = await ProjectStore.get(id);
+  if (!record) return;
+  downloadBundle(await buildBundle(record.draft));
+}
+
+function validateImportDraft(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (typeof value.title !== 'string' || value.title.length > 40) return null;
+  if (typeof value.source !== 'string' || typeof value.generatedSource !== 'string') return null;
+  if (!STYLES[value.style] || !['warm', 'teal', 'bold'].includes(value.theme)) return null;
+  if (typeof value.accessible !== 'boolean' || !['16:9', '9:16'].includes(value.aspectRatio)) return null;
+  if (value.sourceInfo && (typeof value.sourceInfo !== 'object' || (value.sourceInfo.url && !/^https?:\/\//.test(value.sourceInfo.url)))) return null;
+  if (!Array.isArray(value.scenes) || value.scenes.length > 8) return null;
+  for (const scene of value.scenes) {
+    if (!scene || typeof scene !== 'object') return null;
+    if (!['title', 'narration', 'source'].every((key) => typeof scene[key] === 'string')) return null;
+    if (typeof scene.reviewed !== 'boolean') return null;
+    const visual = scene.visual;
+    if (!visual || typeof visual !== 'object' || !styleKinds(value.style)[visual.kind]) return null;
+    if (!(visual.imageId === null || /^[a-f0-9]{32}$/.test(visual.imageId || ''))) return null;
+    if (!['text', 'sub', 'interrupt', 'imageName'].every((key) => typeof visual[key] === 'string')) return null;
+    if (!['cover', 'contain'].includes(visual.fit)) return null;
+    if (!Array.isArray(visual.steps) || !visual.steps.every((step) => typeof step === 'string')) return null;
+    if (!Array.isArray(visual.items) || !visual.items.every((item) => item && typeof item.label === 'string' && typeof item.value === 'string')) return null;
+    if (!Array.isArray(visual.keywords) || !visual.keywords.every((word) => typeof word === 'string')) return null;
+    if (![visual.from, visual.to, visual.target, visual.focusX, visual.focusY].every((number) => typeof number === 'number' && Number.isFinite(number))) return null;
+  }
+  return value;
+}
+
+async function importBundleFile(file) {
+  if (busy || initializing) return;
+  if (file.size > 48 * 1024 * 1024) return notify('项目备份不能超过 48 MB。');
+  let value;
+  try { value = JSON.parse(await file.text()); } catch { return notify('无法解析备份，请确认文件完整。'); }
+  if (!value || value.format !== 'zhiying-project' || value.version !== 1) return notify('不支持这个项目备份格式或版本。');
+  const draft = validateImportDraft(value.draft);
+  if (!draft || !Array.isArray(value.assets)) return notify('项目内容格式不正确，已拒绝导入。');
+  const prepared = [];
+  for (const asset of value.assets) {
+    if (!asset || !/^[a-f0-9]{32}$/.test(asset.id || '') || !['image/png', 'image/jpeg', 'image/webp'].includes(asset.mime) || typeof asset.data !== 'string') return notify('图片格式不正确，仅支持 PNG / JPEG / WebP 备份。');
+    let bytes;
+    try { bytes = base64ToBytes(asset.data); } catch { return notify('图片格式不正确，无法解析图片数据。'); }
+    if (bytes.length > 4 * 1024 * 1024) return notify('单张备份图片不能超过 4 MB。');
+    const blob = new Blob([bytes], { type: asset.mime });
+    try { const bitmap = await createImageBitmap(blob); bitmap.close(); } catch { return notify('无法解码的图片，或图片内容与声明的格式不一致。'); }
+    prepared.push({ id: asset.id, blob });
+  }
+  if (storeState !== 'ready') return notify('请先重试打开项目库。');
+  const clean = normalizeDraft(structuredClone(draft));
+  clean.jobId = null;
+  clean.result = null;
+  clean.scenes.forEach((scene) => { scene.reviewed = false; });
+  const provided = new Set(prepared.map((asset) => asset.id));
+  for (const scene of clean.scenes) {
+    if (scene.visual.imageId && !provided.has(scene.visual.imageId)) return notify('项目内容格式不正确，备份缺少图片副本。');
+  }
+  const idMap = new Map();
+  for (const asset of prepared) {
+    const newId = randomHex32();
+    idMap.set(asset.id, newId);
+    await ProjectStore.putAsset(newId, asset.blob);
+  }
+  for (const scene of clean.scenes) if (scene.visual.imageId) scene.visual.imageId = idMap.get(scene.visual.imageId);
+  await ProjectStore.create(clean);
+  await renderLibrary();
+  notify('备份已作为新项目导入，核对状态已重置。', true);
+}
+
+$('project-save').addEventListener('click', () => { if (!busy) flushSave(); });
+$('library-open').addEventListener('click', openLibrary);
+$('workspace-open').addEventListener('click', () => { if (!busy && !initializing) closeLibrary(); });
+$('project-new').addEventListener('click', async () => {
+  if (busy || initializing) return;
+  if (!guardSwitch()) return;
+  const record = await ProjectStore.create(normalizeDraft({}), { activate: true });
+  activeId = record.id;
+  activeRevision = record.revision;
+  state = normalizeDraft(record.draft);
+  dirty = false;
+  saveError = null;
+  stopPlayback();
+  clearResultDom();
+  closeLibrary();
+  applyStateToUi();
+  refreshStatus();
+  refreshEntrances();
+});
+$('project-import-button').addEventListener('click', () => { if (!busy && !initializing) $('project-import').click(); });
+$('project-import').addEventListener('change', (event) => {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (file) importBundleFile(file);
+});
+$('project-rescue').addEventListener('click', async () => { if (!busy && !initializing) downloadBundle(await buildBundle(state)); });
+$('library-retry').addEventListener('click', async () => {
+  if (busy || initializing) return;
+  if (storeState === 'ready') { await flushSave(); return; }
+  if (dirty && !confirm('重试会重新打开项目库并载入已保存内容；当前修改尚未保存，请先备份未保存草稿。继续重试？')) return;
+  try { await ProjectStore.open(); }
+  catch {
+    storeState = 'unopened';
+    saveError = { kind: 'open', message: '无法打开本机项目库（存储被禁用或浏览器限制）；输入的内容仍保留在内存中，可下载救援备份。' };
+    await renderLibrary();
+    refreshStatus();
+    return;
+  }
+  try { await migrateOrLoad(); }
+  catch {
+    storeState = 'legacy-failed';
+    saveError = { kind: 'quota', message: '浏览器存储空间不足或存储被禁用，旧草稿迁移未完成；旧草稿仍保留，可重试。' };
+  }
+  if (storeState === 'ready') {
+    await resolveImages();
+    dirty = false;
+    saveError = null;
+    stopPlayback();
+    clearResultDom();
+    applyStateToUi();
+  }
+  await renderLibrary();
+  refreshStatus();
+  refreshEntrances();
+});
+
+setEditorTab('script');
+refreshEntrances();
+initStore().then(() => {
+  applyStateToUi();
+  refreshStatus();
+  refreshEntrances();
+  if (state.jobId) {
+    state.step = 3;
+    setBusy(true);
+    pollJob();
+  }
+});
