@@ -5,9 +5,12 @@ import hashlib
 import io
 import json
 import mimetypes
+import os
 import re
+import shutil
 import subprocess
 import threading
+import time
 import uuid
 import wave
 import webbrowser
@@ -27,11 +30,23 @@ EXPORTS = ROOT / 'exports'
 AUDITIONS = ROOT / 'auditions'
 PREVIEWS = ROOT / 'previews'
 JOBS = {}
+PREVIEW_LOCKS = {}
 JOB_LOCK = threading.Lock()
+PREVIEW_LOCKS_LOCK = threading.Lock()
 SPEECH_LOCK = threading.Lock()
 MAX_BODY = 48000
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_IMAGE_BODY = (MAX_IMAGE_BYTES + 2) // 3 * 4 + 1024
+MAX_GC_IDS = 512
+EXPORT_KEEP = 10
+EXPORT_MAX_BYTES = 1024 ** 3
+EXPORT_GRACE_SECONDS = 24 * 3600
+EXPORT_KEEP_FILES = ('video.mp4', 'subtitles.srt', 'script.txt', 'render.log', 'project.json')
+PREVIEW_MAX_BYTES = 256 * 1024 ** 2
+AUDITION_MAX_BYTES = 128 * 1024 ** 2
+PREVIEW_LOCKS_MAX = 4096
+PREVIEW_LOCKS_KEEP = 3072
+JOB_KEEP = 20
 
 
 class ValidationError(ValueError):
@@ -275,7 +290,9 @@ def audition_scene(narration, accessible):
     key = hashlib.sha1(f'{rate}:{narration}'.encode('utf-8')).hexdigest()
     wav_path = AUDITIONS / f'{key}.wav'
     with SPEECH_LOCK:
-        if not wav_path.is_file():
+        if wav_path.is_file():
+            os.utime(wav_path, None)
+        else:
             AUDITIONS.mkdir(exist_ok=True)
             synthesize_wav(narration, rate, wav_path, AUDITIONS / f'{key}.log')
     with wave.open(str(wav_path), 'rb') as audio:
@@ -288,37 +305,218 @@ def estimate_segment_duration(caption, accessible):
     return round((len(caption) / speed + 0.30) * 24 + 0.5) / 24
 
 
+def preview_lock(key):
+    with PREVIEW_LOCKS_LOCK:
+        if len(PREVIEW_LOCKS) > PREVIEW_LOCKS_MAX:
+            for stale_key, stale_lock in list(PREVIEW_LOCKS.items()):
+                if len(PREVIEW_LOCKS) <= PREVIEW_LOCKS_KEEP:
+                    break
+                if not stale_lock.locked():
+                    PREVIEW_LOCKS.pop(stale_key, None)
+        lock = PREVIEW_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            PREVIEW_LOCKS[key] = lock
+        return lock
+
+
+def read_scene_meta(directory, meta_path):
+    try:
+        meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        names = [frame['url'].rsplit('/', 1)[-1] for frame in meta['frames']]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not names or not all((directory / name).is_file() for name in {names[0], names[-1]}):
+        return None
+    os.utime(directory, None)
+    return meta
+
+
 def scene_frames(project, index):
     scene = project['scenes'][index]
     total = len(project['scenes'])
-    key = hashlib.sha1(json.dumps({'scene': scene, 'theme': project['theme'], 'style': project['style'],
+    render_fields = {field: scene[field] for field in ('title', 'narration', 'visual')}
+    key = hashlib.sha1(json.dumps({'scene': render_fields, 'theme': project['theme'], 'style': project['style'],
                                    'accessible': project['accessible'], 'index': index, 'total': total},
                                   ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
     directory = PREVIEWS / key
     meta_path = directory / 'meta.json'
-    if meta_path.is_file():
-        return json.loads(meta_path.read_text(encoding='utf-8'))
-    captions = split_captions(scene['narration'], project['accessible'])
-    segments, start = [], 0.0
-    for caption in captions:
-        duration = estimate_segment_duration(caption, project['accessible'])
-        segments.append((caption, start, duration))
-        start += duration
-    scene_duration = start
-    phases = phase_starts(project['style'], scene['visual']['kind'])
-    directory.mkdir(parents=True, exist_ok=True)
-    frames, number = [], 0
-    for caption, seg_start, seg_duration in segments:
-        for moment in animation_times(seg_start, seg_duration, scene_duration, phases):
-            progress = (seg_start + moment) / scene_duration
-            filename = f'frame-{number:03d}.png'
-            draw_frame(scene, index, total, project['theme'], project['accessible'],
-                       caption, progress=progress, draft=True, style=project['style']).save(directory / filename)
-            frames.append({'at': round(progress, 4), 'url': f'/previews/{key}/{filename}'})
-            number += 1
-    meta = {'duration': round(scene_duration, 2), 'frames': frames}
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
-    return meta
+    meta = read_scene_meta(directory, meta_path)
+    if meta is not None:
+        return meta
+    with preview_lock(key):
+        meta = read_scene_meta(directory, meta_path)
+        if meta is not None:
+            return meta
+        captions = split_captions(scene['narration'], project['accessible'])
+        segments, start = [], 0.0
+        for caption in captions:
+            duration = estimate_segment_duration(caption, project['accessible'])
+            segments.append((caption, start, duration))
+            start += duration
+        scene_duration = start
+        phases = phase_starts(project['style'], scene['visual']['kind'])
+        directory.mkdir(parents=True, exist_ok=True)
+        frames, number = [], 0
+        for caption, seg_start, seg_duration in segments:
+            for moment in animation_times(seg_start, seg_duration, scene_duration, phases):
+                progress = (seg_start + moment) / scene_duration
+                filename = f'frame-{number:03d}.png'
+                draw_frame(scene, index, total, project['theme'], project['accessible'],
+                           caption, progress=progress, draft=True, style=project['style']).save(directory / filename)
+                frames.append({'at': round(progress, 4), 'url': f'/previews/{key}/{filename}'})
+                number += 1
+        meta = {'duration': round(scene_duration, 2), 'frames': frames}
+        temp_path = meta_path.with_name('meta.json.tmp')
+        temp_path.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+        os.replace(temp_path, meta_path)
+        return meta
+
+
+def running_job_ids():
+    with JOB_LOCK:
+        return {job_id for job_id, job in JOBS.items() if job.get('status') == 'running'}
+
+
+def reap_jobs(keep=JOB_KEEP):
+    finished = [job_id for job_id, job in JOBS.items() if job.get('status') != 'running']
+    for job_id in finished[:max(0, len(finished) - keep)]:
+        JOBS.pop(job_id, None)
+
+
+def dir_bytes(path):
+    total = 0
+    for file in path.rglob('*'):
+        try:
+            if file.is_file():
+                total += file.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def prune_export_intermediates(directory):
+    for file in directory.iterdir():
+        if file.is_file() and file.name not in EXPORT_KEEP_FILES:
+            file.unlink(missing_ok=True)
+
+
+def cleanup_exports(protected=None):
+    protected = running_job_ids() if protected is None else protected
+    if not EXPORTS.is_dir():
+        return 0
+    now = time.time()
+    freed = 0
+    completed = []
+    for directory in EXPORTS.iterdir():
+        if not directory.is_dir() or not re.fullmatch(r'[a-f0-9]{32}', directory.name) or directory.name in protected:
+            continue
+        try:
+            modified = directory.stat().st_mtime
+            size = dir_bytes(directory)
+        except OSError:
+            continue
+        if not (directory / 'video.mp4').is_file():
+            if now - modified > EXPORT_GRACE_SECONDS:
+                shutil.rmtree(directory, ignore_errors=True)
+                freed += size
+            continue
+        completed.append((modified, size, directory))
+    completed.sort(key=lambda item: item[0], reverse=True)
+    kept_bytes = 0
+    for index, (_, size, directory) in enumerate(completed):
+        if index and (index >= EXPORT_KEEP or kept_bytes >= EXPORT_MAX_BYTES):
+            shutil.rmtree(directory, ignore_errors=True)
+            freed += size
+        else:
+            kept_bytes += size
+    return freed
+
+
+def trim_by_mtime(base, maximum):
+    freed = 0
+    if not base.is_dir():
+        return freed
+    entries, total = [], 0
+    for path in base.iterdir():
+        try:
+            size = dir_bytes(path) if path.is_dir() else path.stat().st_size
+            entries.append((path.stat().st_mtime, size, path))
+            total += size
+        except OSError:
+            continue
+    entries.sort()
+    for _, size, path in entries:
+        if total <= maximum:
+            break
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+        total -= size
+        freed += size
+    return freed
+
+
+def cleanup_all():
+    freed = cleanup_exports()
+    freed += trim_by_mtime(PREVIEWS, PREVIEW_MAX_BYTES)
+    freed += trim_by_mtime(AUDITIONS, AUDITION_MAX_BYTES)
+    return freed
+
+
+def dir_usage(base):
+    files, total = 0, 0
+    if base.is_dir():
+        for file in base.rglob('*'):
+            try:
+                if file.is_file():
+                    files += 1
+                    total += file.stat().st_size
+            except OSError:
+                continue
+    return {'bytes': total, 'files': files}
+
+
+def usage_stats():
+    usage = {'exports': dir_usage(EXPORTS), 'previews': dir_usage(PREVIEWS),
+             'auditions': dir_usage(AUDITIONS), 'assets': dir_usage(ASSETS)}
+    completed = 0
+    if EXPORTS.is_dir():
+        completed = sum(1 for directory in EXPORTS.iterdir()
+                        if directory.is_dir() and (directory / 'video.mp4').is_file())
+    usage['exports']['completed'] = completed
+    return usage
+
+
+def gc_files(asset_ids, export_ids):
+    deleted = {'assets': 0, 'exports': 0}
+    skipped = {'assets': 0, 'exports': 0}
+    for image_id in asset_ids:
+        if not isinstance(image_id, str) or not re.fullmatch(r'[a-f0-9]{32}', image_id):
+            raise ValidationError('图片编号不正确。')
+        path = ASSETS / f'{image_id}.png'
+        try:
+            if path.is_file():
+                path.unlink()
+                deleted['assets'] += 1
+        except OSError:
+            skipped['assets'] += 1
+    protected = running_job_ids()
+    for job_id in export_ids:
+        if not isinstance(job_id, str) or not re.fullmatch(r'[a-f0-9]{32}', job_id):
+            raise ValidationError('成片任务编号不正确。')
+        if job_id in protected:
+            skipped['exports'] += 1
+            continue
+        path = EXPORTS / job_id
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+            if path.exists():
+                skipped['exports'] += 1
+            else:
+                deleted['exports'] += 1
+    return {'deleted': deleted, 'skipped': skipped}
 
 
 def render_job(job_id, project):
@@ -397,10 +595,12 @@ def render_job(job_id, project):
             f'画面素材：{scene["visual"]["imageName"] if scene["visual"]["imageId"] else "本地情景插画"}'
             for i, scene in enumerate(project['scenes']))
         (directory / 'script.txt').write_text(script, encoding='utf-8-sig')
+        prune_export_intermediates(directory)
         job.update(status='completed', progress=100, message='制作完成，视频已保存在本机。',
                    duration=round(duration, 1), size=output.stat().st_size,
                    video=f'/files/{job_id}/video.mp4', subtitles=f'/files/{job_id}/subtitles.srt',
                    script=f'/files/{job_id}/script.txt')
+        cleanup_exports(protected={job_id})
     except Exception as error:
         with log.open('a', encoding='utf-8') as output:
             output.write(f'\n{type(error).__name__}: {error}\n')
@@ -441,6 +641,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/status':
             return self.json_response({'local': True, 'engine': '本地规则分镜 + Windows 离线中文配音',
                                        'ffmpeg': Path(imageio_ffmpeg.get_ffmpeg_exe()).is_file()})
+        if path == '/api/usage':
+            return self.json_response(usage_stats())
         match = re.fullmatch(r'/assets/([a-f0-9]{32})\.png', path)
         if match:
             filename = ASSETS / f'{match.group(1)}.png'
@@ -535,6 +737,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValidationError('请求格式不正确。')
             if path == '/api/assets':
                 return self.json_response(store_image(data.get('image')), 201)
+            if path == '/api/gc':
+                assets, exports = data.get('assets', []), data.get('exports', [])
+                if not isinstance(assets, list) or not isinstance(exports, list):
+                    raise ValidationError('待清理列表格式不正确。')
+                if len(assets) > MAX_GC_IDS or len(exports) > MAX_GC_IDS:
+                    raise ValidationError('待清理列表过长，请分批清理。')
+                return self.json_response(gc_files(assets, exports))
+            if path == '/api/cleanup':
+                return self.json_response({'freed': cleanup_all(), 'usage': usage_stats()})
             if path == '/api/draft':
                 style = data.get('style', 'illustration')
                 if not isinstance(style, str) or style not in STYLES:
@@ -566,6 +777,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.json_response({'error': '已有视频正在制作，请等待完成后再试。'}, 409)
                     job_id = uuid.uuid4().hex
                     JOBS[job_id] = {'id': job_id, 'status': 'running', 'progress': 0, 'message': '已进入本地制作队列…'}
+                    reap_jobs()
                 threading.Thread(target=render_job, args=(job_id, project), daemon=True).start()
                 return self.json_response({'id': job_id}, 202)
             return self.json_response({'error': '接口不存在。'}, 404)
@@ -586,6 +798,10 @@ def main():
     parser.add_argument('--open', action='store_true')
     args = parser.parse_args()
     EXPORTS.mkdir(exist_ok=True)
+    try:
+        cleanup_all()
+    except OSError as error:
+        print(f'Startup cleanup skipped: {error}', flush=True)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     address = f'http://127.0.0.1:{args.port}'
     print(f'Zhiying local studio: {address}', flush=True)

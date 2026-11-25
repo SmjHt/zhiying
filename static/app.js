@@ -495,7 +495,7 @@ function setStep(step) {
   state.step = step;
   updateNavigation();
   if (step === 2) renderEditor();
-  if (step === 3) renderExport();
+  if (step === 3) { renderExport(); refreshUsage(); }
   showOutputIfReady();
   save();
   document.querySelector('.workspace').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -924,6 +924,24 @@ function showOutputIfReady() {
   $('estimated-time').textContent = `成片 ${displayDuration(result.duration)}`;
 }
 
+function formatBytes(bytes) {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+async function refreshUsage() {
+  const row = $('storage-row');
+  try {
+    const usage = await (await request('/api/usage')).json();
+    $('storage-summary').textContent = `本机占用：成片 ${formatBytes(usage.exports.bytes)}（${usage.exports.completed} 支已完成）· `
+      + `预览缓存 ${formatBytes(usage.previews.bytes)} · 配音缓存 ${formatBytes(usage.auditions.bytes)} · 图片副本 ${formatBytes(usage.assets.bytes)}`;
+    row.hidden = false;
+  } catch (error) {
+    row.hidden = true;
+  }
+}
+
 function setBusy(value) {
   busy = value;
   if (value) stopPlayback();
@@ -1201,6 +1219,22 @@ $('export-button').addEventListener('click', async () => {
 });
 
 document.querySelectorAll('[data-step]').forEach((button) => button.addEventListener('click', () => setStep(Number(button.dataset.step))));
+let cleaningUp = false;
+$('cleanup-button').addEventListener('click', async () => {
+  if (busy || cleaningUp) return;
+  if (!confirm('清理本机运行文件？\n\n将删除：超出保留上限的旧成片、未完成的半成品、超出容量上限的预览与配音缓存。\n不会删除：项目资料、图片副本和最近保留的成片。')) return;
+  cleaningUp = true;
+  $('cleanup-button').disabled = true;
+  try {
+    const result = await (await request('/api/cleanup', {})).json();
+    notify(`已清理本机运行文件 ${formatBytes(result.freed)}。`, true);
+    await refreshUsage();
+  } catch (error) {
+    notify(error instanceof TypeError ? '无法连接本地服务，请确认服务运行后重试。' : error.message);
+  }
+  $('cleanup-button').disabled = false;
+  cleaningUp = false;
+});
 $('previous-scene').addEventListener('click', () => selectScene(state.activeScene - 1));
 $('next-scene').addEventListener('click', () => selectScene(state.activeScene + 1));
 $('play-preview').addEventListener('click', toggleContinuous);
@@ -1226,7 +1260,15 @@ $('clear-draft').addEventListener('click', async () => {
   $('help-dialog').close();
   await flushSave();
 });
-$('result-video').addEventListener('error', () => notify('成片无法载入，请确认本地服务运行中且导出文件未被移动。'));
+$('result-video').addEventListener('error', () => {
+  if ($('result-video').hidden) return;
+  state.result = null;
+  state.jobId = null;
+  clearResultDom();
+  renderExport();
+  save();
+  notify('成片文件已被清理或移动，无法载入；可返回修改后重新合成。');
+});
 
 function applyStateToUi() {
   $('source-input').value = state.source;
@@ -1362,8 +1404,17 @@ async function duplicateProject(id) {
 async function deleteProject(id) {
   const record = await ProjectStore.get(id);
   if (!record) return;
-  if (!confirm(`删除项目「${record.draft.title}」？删除后无法撤销，未被其他项目引用的图片副本也会清理。`)) return;
+  if (!confirm(`删除项目「${record.draft.title}」？删除后无法撤销，本项目的成片与未被其他项目引用的图片副本也会清理。`)) return;
+  const orphanAssets = new Set((record.draft.scenes || []).map((scene) => scene.visual?.imageId).filter(Boolean));
+  const jobId = /^[a-f0-9]{32}$/.test(record.draft.jobId || '') ? record.draft.jobId : null;
   await ProjectStore.remove(id);
+  const rows = await ProjectStore.list();
+  for (const row of rows) for (const scene of row.draft.scenes || []) orphanAssets.delete(scene.visual?.imageId);
+  try {
+    await request('/api/gc', { assets: [...orphanAssets], exports: jobId ? [jobId] : [] });
+  } catch (error) {
+    // 服务端不可用时仅清掉浏览器副本；磁盘孤儿文件由启动清理兜底。
+  }
   if (activeId === id) {
     activeId = null;
     activeRevision = null;

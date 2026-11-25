@@ -122,6 +122,7 @@
             <div id="export-success" class="export-success" hidden><div class="success-heading"><svg class="icon"><use href="#i-check"/></svg><strong>短片制作完成</strong></div><p id="result-details"></p><a id="download-video" class="button primary wide" download="知映-反诈宣传.mp4"><svg class="icon"><use href="#i-download"/></svg>下载 MP4 视频</a><div class="extra-downloads"><a id="download-subtitles" download="反诈宣传.srt">另存 SRT 字幕</a><span>·</span><a id="download-script" download="反诈宣传脚本.txt">另存分镜脚本</a></div></div>
             <button id="export-button" class="button primary wide"><svg class="icon"><use href="#i-film"/></svg>开始本地合成</button>
             <button id="back-scenes" class="text-button back-link">← 返回修改分镜</button>
+            <div id="storage-row" class="storage-row" hidden><span id="storage-summary">正在统计本机占用…</span><button id="cleanup-button" class="text-button" type="button">清理旧成片与缓存</button></div>
             <p class="micro-note">此版本生成带情景动画的图文配音短片，不生成真人视频；本机语音的自然度有限。</p>
           </section>
         </div>
@@ -151,6 +152,6 @@
   </main>
 
   <div id="toast" class="toast" role="alert" hidden></div>
-  <dialog id="help-dialog"><div class="dialog-heading"><h2>从资料到短片，只需三步</h2><button id="help-close" class="round-button" aria-label="关闭使用指南">×</button></div><ol><li><strong>整理资料</strong><p>粘贴已核实的反诈资料，或载入演示示例；分段写清要点，并自主选择渲染风格库（浅色插画 / 夜色发光）。</p></li><li><strong>核对分镜</strong><p>本地规则拆分原文并按关键词推荐道具，不核查事实。可在当前风格库中自主更换每幕道具、编辑道具参数（步骤、百分比、票据条目、标红关键词等）、导入本机图片并调整取景；在时间轴上拖动卡片或前移后移调整顺序后需重新核对全部内容。画面会随配音逐条呈现并高亮风险。</p></li><li><strong>试听与导出</strong><p>可逐幕试听本机配音、连续预览动态草稿；确认后用 Windows 离线中文语音和本机 FFmpeg 制作真实 MP4，完成后可播放、下载视频和字幕。</p></li></ol><div class="quiet-note">项目保存在当前浏览器的本机项目库（IndexedDB），图片副本同时保存在 assets 目录，视频保存在 exports 目录；均不对外上传或发布。清空草稿只影响当前项目，不会删除本地素材和成片。</div><button id="clear-draft" class="text-button danger">清空当前项目草稿（不会删除已导出的视频）</button></dialog>
+  <dialog id="help-dialog"><div class="dialog-heading"><h2>从资料到短片，只需三步</h2><button id="help-close" class="round-button" aria-label="关闭使用指南">×</button></div><ol><li><strong>整理资料</strong><p>粘贴已核实的反诈资料，或载入演示示例；分段写清要点，并自主选择渲染风格库（浅色插画 / 夜色发光）。</p></li><li><strong>核对分镜</strong><p>本地规则拆分原文并按关键词推荐道具，不核查事实。可在当前风格库中自主更换每幕道具、编辑道具参数（步骤、百分比、票据条目、标红关键词等）、导入本机图片并调整取景；在时间轴上拖动卡片或前移后移调整顺序后需重新核对全部内容。画面会随配音逐条呈现并高亮风险。</p></li><li><strong>试听与导出</strong><p>可逐幕试听本机配音、连续预览动态草稿；确认后用 Windows 离线中文语音和本机 FFmpeg 制作真实 MP4，完成后可播放、下载视频和字幕。</p></li></ol><div class="quiet-note">项目保存在当前浏览器的本机项目库（IndexedDB），图片副本同时保存在 assets 目录，视频保存在 exports 目录；均不对外上传或发布。合成完成与服务启动时会自动清理超出保留上限的旧成片、半成品与预览配音缓存，也可以在“预览与导出”区查看本机占用并手动清理。删除项目会一并清理它的成片与未被其他项目引用的图片。清空草稿只影响当前项目，不会删除本地素材和成片。</div><button id="clear-draft" class="text-button danger">清空当前项目草稿（不会删除已导出的视频）</button></dialog>
 </body>
 </html>

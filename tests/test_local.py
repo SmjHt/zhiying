@@ -1,10 +1,12 @@
 import base64
 import io
 import json
+import os
 import re
 import tempfile
 import sys
 import threading
+import time
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
@@ -15,8 +17,9 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rendering import (SCENE_KINDS, animation_times, draw_frame, font, phase_starts, preview_png,
                        split_captions, wrap_text)
-from server import (Handler, ThreadingHTTPServer, ValidationError, make_draft, scene_frames, store_image,
-                    suggest_visual, timestamp, validate_project, validate_visual)
+from server import (Handler, ThreadingHTTPServer, ValidationError, cleanup_exports, gc_files, make_draft,
+                    prune_export_intermediates, reap_jobs, scene_frames, store_image, suggest_visual,
+                    timestamp, trim_by_mtime, validate_project, validate_visual)
 
 
 class DraftTests(unittest.TestCase):
@@ -253,6 +256,195 @@ class NoirTests(unittest.TestCase):
         self.assertNotEqual(with_keywords.crop(region).tobytes(), without.crop(region).tobytes())
 
 
+class CleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.exports = Path(self.tmp.name) / 'exports'
+        self.exports.mkdir()
+        patcher = patch('server.EXPORTS', self.exports)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def make_job(self, name, complete=True, age=0.0, size=2048):
+        directory = self.exports / name
+        directory.mkdir()
+        (directory / 'data.bin').write_bytes(b'x' * size)
+        if complete:
+            (directory / 'video.mp4').write_bytes(b'x' * size)
+        stamp = time.time() - age * 3600
+        os.utime(directory, (stamp, stamp))
+        return directory
+
+    def test_exports_keep_limit_grace_and_running(self):
+        fresh_incomplete = self.make_job('b' * 32, complete=False, age=1)
+        stale_incomplete = self.make_job('c' * 32, complete=False, age=48)
+        running = self.make_job('d' * 32, complete=False, age=1)
+        newest = self.make_job('a' * 32, age=1)
+        middle = self.make_job('f' * 32, age=200)
+        oldest = self.make_job('e' * 32, age=300)
+        with patch('server.EXPORT_KEEP', 2), patch('server.JOBS', {'d' * 32: {'status': 'running'}}):
+            self.assertGreater(cleanup_exports(), 0)
+        self.assertTrue(fresh_incomplete.is_dir(), '半成品在宽限期内应保留')
+        self.assertFalse(stale_incomplete.is_dir(), '过期半成品应删除')
+        self.assertTrue(running.is_dir(), '制作中的任务目录不能删除')
+        self.assertTrue(newest.is_dir() and middle.is_dir())
+        self.assertFalse(oldest.is_dir(), '超出保留数量的旧成片应删除')
+
+    def test_exports_capacity_cap_never_drops_newest(self):
+        newest = self.make_job('a' * 32, size=4096)
+        older = self.make_job('f' * 32, age=10, size=4096)
+        with patch('server.EXPORT_MAX_BYTES', 100), patch('server.JOBS', {}):
+            freed = cleanup_exports()
+        self.assertTrue(newest.is_dir())
+        self.assertFalse(older.is_dir())
+        self.assertGreaterEqual(freed, 4096)
+
+    def test_prune_keeps_only_deliverables(self):
+        directory = self.make_job('a' * 32, size=10)
+        (directory / 'clip-000.mp4').write_bytes(b'x')
+        (directory / 'frame-000-000.png').write_bytes(b'x')
+        (directory / 'audio-000.wav').write_bytes(b'x')
+        (directory / 'subtitles.srt').write_text('x', encoding='utf-8')
+        prune_export_intermediates(directory)
+        self.assertEqual({f.name for f in directory.iterdir()}, {'video.mp4', 'subtitles.srt'})
+
+    def test_gc_files_deletes_named_paths_and_skips_running(self):
+        assets = Path(self.tmp.name) / 'assets'
+        assets.mkdir()
+        (assets / ('a' * 32 + '.png')).write_bytes(b'png')
+        finished = self.make_job('f' * 32)
+        running = self.make_job('e' * 32, complete=False, age=1)
+        jobs = {'e' * 32: {'status': 'running'}}
+        with patch('server.ASSETS', assets), patch('server.JOBS', jobs):
+            result = gc_files(['a' * 32, 'b' * 32], ['f' * 32, 'e' * 32])
+            self.assertEqual(result['deleted'], {'assets': 1, 'exports': 1})
+            self.assertEqual(result['skipped'], {'assets': 0, 'exports': 1})
+            for assets_value, exports_value in [(['../server'], []), ([], ['a' * 31]), ([None], [])]:
+                with self.assertRaises(ValidationError):
+                    gc_files(assets_value, exports_value)
+        self.assertFalse((assets / ('a' * 32 + '.png')).exists())
+        self.assertFalse(finished.exists())
+        self.assertTrue(running.is_dir())
+
+    def test_trim_by_mtime_removes_oldest_first(self):
+        base = Path(self.tmp.name) / 'previews'
+        base.mkdir()
+        directories = []
+        for name, age in [('old', 1000), ('mid', 500), ('new', 0)]:
+            directory = base / name
+            directory.mkdir()
+            (directory / 'meta.json').write_bytes(b'x' * 1000)
+            stamp = time.time() - age
+            os.utime(directory, (stamp, stamp))
+            directories.append(directory)
+        self.assertEqual(trim_by_mtime(base, 2500), 1000)
+        self.assertFalse(directories[0].exists())
+        self.assertTrue(directories[1].is_dir() and directories[2].is_dir())
+        audio_base = Path(self.tmp.name) / 'auditions'
+        audio_base.mkdir()
+        for name, age in [('a.wav', 1000), ('b.wav', 0)]:
+            file = audio_base / name
+            file.write_bytes(b'x' * 900)
+            stamp = time.time() - age
+            os.utime(file, (stamp, stamp))
+        self.assertEqual(trim_by_mtime(audio_base, 900), 900)
+        self.assertFalse((audio_base / 'a.wav').exists())
+        self.assertTrue((audio_base / 'b.wav').is_file())
+
+    def test_preview_cache_hit_touches_directory_for_lru(self):
+        scene = make_draft('核实来电：陌生来电要核实，不要相信安全账户。')[0]
+        project = {'title': '反诈', 'theme': 'warm', 'style': 'illustration', 'accessible': True, 'scenes': [scene]}
+        with tempfile.TemporaryDirectory() as directory, patch('server.PREVIEWS', Path(directory)):
+            scene_frames(project, 0)
+            cached = next(Path(directory).iterdir())
+            past = time.time() - 7200
+            os.utime(cached, (past, past))
+            meta = scene_frames(project, 0)
+            self.assertTrue(meta['frames'])
+            self.assertGreater(cached.stat().st_mtime, past + 60)
+
+
+class PreviewCacheTests(unittest.TestCase):
+    def project(self, narration='核实来电：陌生来电要核实，不要相信安全账户。'):
+        scene = make_draft(narration)[0]
+        return {'title': '反诈', 'theme': 'warm', 'style': 'illustration', 'accessible': True, 'scenes': [scene]}, scene
+
+    def test_reviewed_and_source_do_not_rebuild(self):
+        project, scene = self.project()
+        with tempfile.TemporaryDirectory() as directory, patch('server.PREVIEWS', Path(directory)):
+            first = scene_frames(project, 0)
+            before = {p.name for p in Path(directory).iterdir()}
+            scene['reviewed'] = True
+            scene['source'] = '换成另一段原资料，画面内容一个字都没变。'
+            scene['id'] = '9'
+            second = scene_frames(project, 0)
+            self.assertEqual({p.name for p in Path(directory).iterdir()}, before)
+            self.assertEqual(second['frames'], first['frames'])
+
+    def test_index_and_narration_changes_rebuild(self):
+        project, scene = self.project()
+        with tempfile.TemporaryDirectory() as directory, patch('server.PREVIEWS', Path(directory)):
+            scene_frames(project, 0)
+            before = {p.name for p in Path(directory).iterdir()}
+            project['scenes'] = [dict(scene, title='另一幕'), scene]
+            scene_frames(project, 1)
+            after = {p.name for p in Path(directory).iterdir()}
+            self.assertEqual(len(after - before), 1)
+            scene['narration'] = '转账前请务必通过官方渠道核实对方身份。'
+            scene_frames(project, 1)
+            self.assertEqual(len({p.name for p in Path(directory).iterdir()} - after), 1)
+
+    def test_parallel_requests_render_once(self):
+        project, _ = self.project()
+        original = draw_frame
+        calls = []
+
+        def counting(*args, **kwargs):
+            calls.append(threading.get_ident())
+            return original(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory, patch('server.PREVIEWS', Path(directory)), \
+                patch('server.draw_frame', counting):
+            barrier = threading.Barrier(4)
+            results = []
+
+            def worker():
+                barrier.wait()
+                results.append(scene_frames(project, 0))
+
+            threads = [threading.Thread(target=worker) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(len(results), 4)
+        self.assertEqual(len({json.dumps(meta, sort_keys=True) for meta in results}), 1)
+        self.assertEqual(len(calls), len(results[0]['frames']))
+
+    def test_missing_frame_triggers_rebuild(self):
+        project, _ = self.project()
+        with tempfile.TemporaryDirectory() as directory, patch('server.PREVIEWS', Path(directory)):
+            meta = scene_frames(project, 0)
+            cached = next(Path(directory).iterdir())
+            victim = cached / meta['frames'][0]['url'].rsplit('/', 1)[-1]
+            victim.unlink()
+            rebuilt = scene_frames(project, 0)
+            self.assertTrue(victim.is_file())
+            self.assertEqual(rebuilt['frames'], meta['frames'])
+
+    def test_reap_jobs_keeps_running_and_recent(self):
+        ids = [f'{index:032x}' for index in range(25)]
+        jobs = {job_id: {'status': 'running' if index == 0 else 'completed'} for index, job_id in enumerate(ids)}
+        with patch('server.JOBS', jobs):
+            reap_jobs(keep=20)
+            self.assertEqual(len(jobs), 21)
+            self.assertEqual(jobs[ids[0]]['status'], 'running')
+            self.assertNotIn(ids[4], jobs)
+            self.assertIn(ids[5], jobs)
+            self.assertIn(ids[24], jobs)
+
+
 class HttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -327,6 +519,30 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(dict(headers)['Content-Type'], 'image/png')
         self.assertTrue(body.startswith(b'\x89PNG'))
         self.assertEqual(self.request('/api/preview', {**project, 'index': -1})[0], 400)
+
+    def test_usage_gc_and_cleanup_routes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch('server.EXPORTS', root / 'exports'), patch('server.PREVIEWS', root / 'previews'), \
+                 patch('server.AUDITIONS', root / 'auditions'), patch('server.ASSETS', root / 'assets'):
+                status, _, body = self.request('/api/usage')
+                self.assertEqual(status, 200)
+                usage = json.loads(body)
+                self.assertEqual(set(usage), {'exports', 'previews', 'auditions', 'assets'})
+                self.assertEqual(usage['exports'], {'bytes': 0, 'files': 0, 'completed': 0})
+                self.assertEqual(self.request('/api/gc', {'assets': ['bad']})[0], 400)
+                self.assertEqual(self.request('/api/gc', {'assets': {'a': 1}})[0], 400)
+                status, _, body = self.request('/api/gc', {'assets': ['a' * 32], 'exports': []})
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body)['deleted'], {'assets': 0, 'exports': 0})
+                status, _, body = self.request('/api/cleanup', {})
+                self.assertEqual(status, 200)
+                result = json.loads(body)
+                self.assertEqual(result['freed'], 0)
+                self.assertEqual(set(result['usage']), {'exports', 'previews', 'auditions', 'assets'})
+
+    def test_gc_route_requires_local_headers(self):
+        self.assertEqual(self.request('/api/gc', {'assets': []}, {'X-Zhiying-Local': ''})[0], 403)
 
 
 if __name__ == '__main__':

@@ -69,7 +69,7 @@ zhiying/
 │  ├─ styles.css
 │  └─ favicon.svg
 ├─ tests/
-│  ├─ test_local.py     # 后端 unittest（31 项）
+│  ├─ test_local.py     # 后端 unittest（44 项）
 │  └─ browser-check.cjs # Playwright 浏览器回归（27 项）
 ├─ requirements.txt
 ├─ 配置环境.cmd          # 一键建 .venv 并安装依赖
@@ -80,10 +80,18 @@ zhiying/
 运行时产物目录（已 gitignore，不入库）：`assets/` 导入图片、`previews/` 预览缓存、
 `auditions/` 试听缓存、`exports/` 导出成片。
 
+磁盘卫生：导出成功后只保留 `video.mp4 / subtitles.srt / script.txt / render.log / project.json`，
+逐帧 PNG、分段 wav、clip mp4 等中间文件即时删除；服务启动、每次合成完成和"预览与导出"页的手动
+"清理旧成片与缓存"共用同一套策略——无 `video.mp4` 的半成品过 24 小时宽限期即删（正在制作的任务除外），
+已完成成片最多保留 10 支且总量不超过约 1 GB，`previews/`、`auditions/` 按最久未使用修剪到 256 MB / 128 MB 以内。
+删除项目时前端会计算引用差集，通过 `/api/gc` 删除该项目成片目录与不再被任何项目引用的 `assets/*.png`；
+`/api/usage` 提供各目录占用，供页面展示。
+
 ## 设计要点
 
 - **所见即所得**：预览与导出共用同一套 `draw_frame` / `animation_times` 渲染器，
-  缓存键包含风格与内容，改任何一处都会重新渲染。
+  缓存键只取影响画面的字段（标题、配音、道具、风格、序号），勾选"已核对"或改原资料不会触发重渲染；
+  每个缓存键配锁，并发请求只渲染一次，命中时抽查首尾帧文件、缺失自动重建。
 - **库化与自主控制**：`STYLES`、`SCENE_KINDS`、`NOIR_KINDS` 是注册表而非写死分支；
   `STYLE_KIND_MAP` 负责切风格时的道具双向映射。新增风格/道具应进库并可切换。
 - **动画**：`phase_starts(style, kind)` 定义每种道具的分阶段浮现相位；
@@ -96,7 +104,7 @@ zhiying/
 
 ## 运行测试
 
-后端（31 项）：
+后端（44 项）：
 
 ```bat
 .venv\Scripts\python.exe -m unittest discover -s tests -v
