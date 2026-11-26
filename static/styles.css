@@ -42,3 +42,47 @@
 @media(max-width:760px){.workspace-bar{height:auto;flex-wrap:wrap;gap:8px;padding:10px 16px}.library-bar{padding:12px 16px}.library-list{grid-template-columns:1fr;padding:14px 16px}.library-error{margin:12px 16px}.library-empty{padding:18px 16px}}
 
 .storage-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:14px;padding:10px 12px;border:1px dashed var(--line);border-radius:12px;font-size:12px;color:var(--muted)}
+.field-select{display:block;width:100%;border:1px solid #dfe5da;border-radius:6px;background:#fdfefa;color:#344a3f;font-size:12px;line-height:1.6;padding:11px 34px 11px 13px;appearance:none;-webkit-appearance:none;background-image:linear-gradient(45deg,transparent 49%,#7f937f 50%),linear-gradient(135deg,#7f937f 50%,transparent 51%);background-position:calc(100% - 18px) 19px,calc(100% - 13px) 19px;background-size:5px 5px,5px 5px;background-repeat:no-repeat;transition:border-color .15s;cursor:pointer}
+.field-select:focus{border-color:#8dac92;outline:none;box-shadow:0 0 0 3px #668f6f12}
+.field-select:disabled{opacity:.6;cursor:not-allowed}
+.template-picker{margin:0 0 18px}
+.template-info{border:1px solid #e4e9dd;border-radius:7px;background:#f8faf2;padding:13px 14px}
+.template-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.template-head strong{font-size:12px;font-weight:600}
+.template-share{flex:none;font-size:9px;color:#6f7f52;background:#eef1e0;border:1px solid #e4e8d3;border-radius:4px;padding:3px 7px}
+.template-tagline{margin:8px 0 0;font-size:11px;color:#5d7462;line-height:1.8}
+.template-facts{margin:10px 0 0;display:grid;gap:6px}
+.template-facts div{display:flex;gap:9px;align-items:flex-start}
+.template-facts dt{flex:none;width:58px;font-size:10px;color:#95a18f;line-height:1.9}
+.template-facts dd{margin:0;font-size:10px;color:#6f7d6b;line-height:1.9;word-break:break-word}
+.template-link{display:inline-block;margin-top:10px;font-size:10px;color:#4f7355;border-bottom:1px solid #c9d8c4}
+.template-caveat{margin:10px 0 0;font-size:9px;color:#9aa393;line-height:1.8}
+@media(max-width:760px){.template-facts div{flex-direction:column;gap:1px}.template-facts dt{width:auto}}
+
+.export-package{margin:14px 0 16px;border:1px solid #e4e9dd;border-radius:8px;background:#f8faf2;padding:13px 14px}
+.package-heading{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.package-heading strong{font-size:12px}
+.package-heading span{font-size:9px;color:#95a18f}
+.package-body{display:flex;gap:12px;margin-top:11px;align-items:flex-start}
+#poster-thumbnail{width:132px;height:74px;object-fit:cover;border:1px solid #e1e7d9;border-radius:5px;background:#edf1e6;flex:none}
+.package-copy{min-width:0;flex:1}
+.package-copy .field-label{font-size:10px;margin-bottom:7px;color:#7d8f77;font-weight:500}
+#share-text{min-height:120px;font-size:11px;line-height:1.9;background:#fdfefa;resize:vertical}
+.package-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px}
+.package-actions .button{width:auto}
+@media(max-width:760px){.package-body{flex-direction:column}#poster-thumbnail{width:100%;height:auto}}
+
+.report-block{margin:18px 0 0;border:1px solid #e1e7d9;border-radius:8px;background:#fdfef9;padding:13px 14px}
+.report-heading{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.report-heading strong{font-size:12px}
+.report-heading span{font-size:10px;color:#95a18f}
+.report-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:11px 0 0}
+.report-metrics div{background:#f4f7ec;border-radius:6px;padding:9px 10px;display:flex;flex-direction:column;gap:2px}
+.report-metrics b{font-size:18px;font-weight:700;color:#2f5540;line-height:1.2}
+.report-metrics span{font-size:9px;color:#8d9d7e}
+.report-latest{margin:10px 0 0;font-size:10px;color:#7d8f77;line-height:1.8;word-break:break-word}
+.report-actions{display:flex;align-items:center;gap:9px;margin-top:9px;font-size:10px;color:#8d9d7e}
+@media(max-width:760px){.report-metrics{grid-template-columns:1fr 1fr}}
+
+#render-log{display:block;margin-top:9px;font-size:10px;color:#6f8a63}
+

@@ -49,6 +49,21 @@
         <div class="editor-column">
           <section id="panel-1" class="panel" aria-labelledby="source-heading">
             <div class="section-heading"><div><h2 id="source-heading">先放入一份有用的资料</h2><p>保留事实，不凭空补充。好视频从准确的信息开始。</p></div><span class="section-index">01 / 03</span></div>
+            <div class="template-picker">
+              <div class="label-row"><label class="field-label" for="template-select">从内置剧本模板开始</label><span id="template-count" class="muted">正在载入官方模板…</span></div>
+              <select id="template-select" class="field-select"><option value="">不用模板，手动填写资料</option></select>
+              <div id="template-info" class="template-info" hidden>
+                <div class="template-head"><strong id="template-name"></strong><span id="template-share" class="template-share"></span></div>
+                <p id="template-tagline" class="template-tagline"></p>
+                <dl class="template-facts">
+                  <div><dt>易受骗人群</dt><dd id="template-audience"></dd></div>
+                  <div><dt>受害人画像</dt><dd id="template-demography"></dd></div>
+                  <div><dt>资料来源</dt><dd id="template-source-note"></dd></div>
+                </dl>
+                <a id="template-source-link" class="template-link" target="_blank" rel="noreferrer noopener" hidden>查看官方原文 ↗</a>
+                <p class="template-caveat">人口占比只用于帮你选题，不会写进短片文案。</p>
+              </div>
+            </div>
             <label class="field-label" for="project-title">作品名称</label><input id="project-title" maxlength="40" value="守住钱袋子 · 社区反诈提醒" placeholder="给你的短片起个名字">
             <div class="label-row"><label class="field-label" for="source-input">反诈宣传资料</label><button id="sample-button" class="text-button"><svg class="icon"><use href="#i-spark"/></svg>填入反诈示例</button></div>
             <button id="story-button" class="story-starter"><span class="story-starter-icon"><svg class="icon"><use href="#i-film"/></svg></span><span><strong>试试：一条刷单消息背后的陷阱</strong><small>收到消息 → 识别风险 → 停止转账 → 核实 → 求助</small></span><svg class="icon"><use href="#i-arrow"/></svg></button>
@@ -118,10 +133,16 @@
             <div class="export-cover"><span class="export-icon"><svg class="icon"><use href="#i-film"/></svg></span><div><h3 id="export-title"></h3><p id="export-meta"></p></div></div>
             <div class="spec-grid"><div><span>视频格式</span><strong>MP4 · H.264</strong></div><div><span>画面尺寸</span><strong>1280 × 720</strong></div><div><span>配音方式</span><strong>本机中文语音</strong></div><div><span>字幕交付</span><strong>画面字幕 + SRT</strong></div></div>
             <div class="export-checks"><div><svg class="icon"><use href="#i-check"/></svg><span id="export-review">全部分镜已经人工确认</span></div><div><svg class="icon"><use href="#i-check"/></svg><span>资料、配音和视频不发送到外部服务</span></div><div><svg class="icon"><use href="#i-check"/></svg><span>按实际语音时长合成，不截断配音</span></div></div>
-            <div id="render-progress" class="render-progress" hidden role="status" aria-live="polite"><div><strong id="progress-message">准备制作…</strong><span id="progress-value">0%</span></div><progress id="progress-bar" value="0" max="100"></progress><small>制作期间可以留在这里，文件将保存在项目的 exports 目录。</small></div>
-            <div id="export-success" class="export-success" hidden><div class="success-heading"><svg class="icon"><use href="#i-check"/></svg><strong>短片制作完成</strong></div><p id="result-details"></p><a id="download-video" class="button primary wide" download="知映-反诈宣传.mp4"><svg class="icon"><use href="#i-download"/></svg>下载 MP4 视频</a><div class="extra-downloads"><a id="download-subtitles" download="反诈宣传.srt">另存 SRT 字幕</a><span>·</span><a id="download-script" download="反诈宣传脚本.txt">另存分镜脚本</a></div></div>
+            <div id="render-progress" class="render-progress" hidden role="status" aria-live="polite"><div><strong id="progress-message">准备制作…</strong><span id="progress-value">0%</span></div><progress id="progress-bar" value="0" max="100"></progress><small>制作期间可以留在这里，文件将保存在项目的 exports 目录。</small><a id="render-log" class="text-button" target="_blank" rel="noreferrer noopener" hidden>查看 render.log 排查原因 ↗</a></div>
+            <div id="export-success" class="export-success" hidden><div class="success-heading"><svg class="icon"><use href="#i-check"/></svg><strong>短片制作完成</strong></div><p id="result-details"></p><div id="export-package" class="export-package" hidden><div class="package-heading"><strong>成品包</strong><span>MP4 · SRT · 脚本 · 首帧海报 · 发布文案</span></div><div class="package-body"><img id="poster-thumbnail" alt="短片首帧海报" hidden><div class="package-copy"><label class="field-label" for="share-text">发布文案（可直接复制或另存）</label><textarea id="share-text" rows="7" readonly></textarea><div class="package-actions"><button id="copy-share" class="button secondary" type="button">复制发布文案</button><a id="download-poster" class="text-button" download="首帧海报.png">另存海报</a><span>·</span><a id="download-share" class="text-button" download="发布文案.txt">另存文案</a></div></div></div></div><a id="download-video" class="button primary wide" download="知映-反诈宣传.mp4"><svg class="icon"><use href="#i-download"/></svg>下载 MP4 视频</a><div class="extra-downloads"><a id="download-subtitles" download="反诈宣传.srt">另存 SRT 字幕</a><span>·</span><a id="download-script" download="反诈宣传脚本.txt">另存分镜脚本</a></div></div>
             <button id="export-button" class="button primary wide"><svg class="icon"><use href="#i-film"/></svg>开始本地合成</button>
             <button id="back-scenes" class="text-button back-link">← 返回修改分镜</button>
+            <div id="report-block" class="report-block">
+              <div class="report-heading"><strong>产出记录</strong><span id="report-range">正在统计本机产出…</span></div>
+              <div class="report-metrics"><div><b id="report-clips">0</b><span>支成片</span></div><div><b id="report-projects">0</b><span>个作品</span></div><div><b id="report-minutes">0.0</b><span>分钟</span></div><div><b id="report-source">0</b><span>带出处</span></div></div>
+              <p id="report-latest" class="report-latest"></p>
+              <div class="report-actions"><a id="report-card" class="text-button" href="/api/report/card.png" download="知映-产出记录.png">下载记录卡</a><span>·</span><button id="report-refresh" class="text-button" type="button">刷新统计</button></div>
+            </div>
             <div id="storage-row" class="storage-row" hidden><span id="storage-summary">正在统计本机占用…</span><button id="cleanup-button" class="text-button" type="button">清理旧成片与缓存</button></div>
             <p class="micro-note">此版本生成带情景动画的图文配音短片，不生成真人视频；本机语音的自然度有限。</p>
           </section>

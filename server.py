@@ -24,7 +24,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from rendering import (ASSETS, KIND_LABELS, NOIR_KINDS, SCENE_KINDS, STYLES, THEMES, animation_times,
-                       draw_frame, phase_starts, preview_png, split_captions)
+                       draw_frame, phase_starts, preview_png, report_png, split_captions)
 
 ROOT = Path(__file__).resolve().parent
 EXPORTS = ROOT / 'exports'
@@ -42,7 +42,9 @@ MAX_GC_IDS = 512
 EXPORT_KEEP = 10
 EXPORT_MAX_BYTES = 1024 ** 3
 EXPORT_GRACE_SECONDS = 24 * 3600
-EXPORT_KEEP_FILES = ('video.mp4', 'subtitles.srt', 'script.txt', 'render.log', 'project.json')
+EXPORT_KEEP_FILES = ('video.mp4', 'subtitles.srt', 'script.txt', 'poster.png', 'share.txt', 'render.log', 'project.json')
+SHARE_TOPICS = '#全民反诈 #守住钱袋子 #社区科普'
+SHARE_SIGNATURE = '—— 地球村 · 反诈宣传'
 PREVIEW_MAX_BYTES = 256 * 1024 ** 2
 AUDITION_MAX_BYTES = 128 * 1024 ** 2
 PREVIEW_LOCKS_MAX = 4096
@@ -241,6 +243,15 @@ def validate_project(data, require_review=False):
     accessible = data.get('accessible', True)
     if not isinstance(accessible, bool):
         raise ValidationError('适老模式参数不正确。')
+    raw_source_info = data.get('sourceInfo')
+    if raw_source_info is None:
+        raw_source_info = {}
+    if not isinstance(raw_source_info, dict):
+        raise ValidationError('资料来源信息格式不正确。')
+    source_info = {key: checked_text(raw_source_info.get(key, ''), '资料来源信息', 200, 0)
+                   for key in ('name', 'url', 'publishedAt')}
+    if source_info['url'] and not re.fullmatch(r'https?://[^\s]{1,190}', source_info['url']):
+        raise ValidationError('资料来源链接只支持以 http 或 https 开头的地址。')
     scenes = data.get('scenes')
     if not isinstance(scenes, list) or not 1 <= len(scenes) <= 8:
         raise ValidationError('需要 1–8 个分镜。')
@@ -259,7 +270,8 @@ def validate_project(data, require_review=False):
         clean.append(clean_scene)
     if sum(len(scene['narration']) for scene in clean) > 1800:
         raise ValidationError('全部配音合计不能超过 1800 字。')
-    return {'title': title, 'theme': theme, 'style': style, 'accessible': accessible, 'scenes': clean}
+    return {'title': title, 'theme': theme, 'style': style, 'accessible': accessible,
+            'sourceInfo': source_info, 'scenes': clean}
 
 
 def timestamp(seconds):
@@ -497,6 +509,41 @@ def dir_bytes(path):
     return total
 
 
+def share_point(text, limit=46):
+    """截取第一句做发布文案的要点，避免整段照搬。"""
+    sentence = re.split(r'[。！？；]', text.strip())[0].strip()
+    return sentence if len(sentence) <= limit else sentence[:limit] + '…'
+
+
+def source_lines(source):
+    """把资料来源整理成可核对的几行，避免重复“资料来源：”前缀。"""
+    lines = []
+    name = (source.get('name') or '').strip()
+    if name:
+        lines.append(name if name.startswith('资料来源') else f'资料来源：{name}')
+    if source.get('publishedAt'):
+        lines.append(f'资料日期：{source["publishedAt"]}')
+    if source.get('url'):
+        lines.append(f'原文链接：{source["url"]}')
+    return lines
+
+
+def build_share_text(project, duration=0.0):
+    """生成随成片一起交付的发布文案；落款固定为地球村。"""
+    scenes = project['scenes']
+    lines = [project['title'], '', '【本期要点】']
+    for scene in scenes[:3]:
+        lines.append(f'· {share_point(scene["narration"])}')
+    lines += ['', '【记住一句话】', share_point(scenes[-1]['narration'])]
+    notes = source_lines(project.get('sourceInfo') or {})
+    if notes:
+        lines += [''] + notes
+    if duration:
+        lines += ['', f'时长约 {max(1, round(duration))} 秒 · 本机离线生成，资料未上传。']
+    lines += ['', SHARE_TOPICS, SHARE_SIGNATURE]
+    return '\n'.join(lines) + '\n'
+
+
 def prune_export_intermediates(directory):
     for file in directory.iterdir():
         if file.is_file() and file.name not in EXPORT_KEEP_FILES:
@@ -589,6 +636,72 @@ def usage_stats():
                         if directory.is_dir() and (directory / 'video.mp4').is_file())
     usage['exports']['completed'] = completed
     return usage
+
+
+LEDGER_KEEP = 200
+
+
+def ledger_path():
+    return EXPORTS / 'ledger.json'
+
+
+def safe_number(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_ledger():
+    """读取只增不减的产出账本；缺失或损坏时按空账本处理，绝不影响成片。"""
+    try:
+        rows = json.loads(ledger_path().read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)][-LEDGER_KEEP:]
+
+
+def record_ledger(project, job_id, duration, size):
+    """成片成功时记一笔；先写临时文件再替换，避免留下半截 JSON。"""
+    rows = load_ledger()
+    source = project.get('sourceInfo') or {}
+    rows.append({'id': job_id, 'title': project['title'], 'at': round(time.time(), 3),
+                 'duration': round(float(duration), 1), 'size': int(size),
+                 'scenes': len(project['scenes']), 'style': project['style'],
+                 'accessible': bool(project['accessible']), 'source': str(source.get('name') or '')[:80]})
+    target = ledger_path()
+    try:
+        EXPORTS.mkdir(exist_ok=True)
+        temporary = target.with_name('ledger.tmp')
+        temporary.write_text(json.dumps(rows[-LEDGER_KEEP:], ensure_ascii=False, indent=1), encoding='utf-8')
+        os.replace(temporary, target)
+    except OSError:
+        pass
+
+
+def report_stats():
+    rows = load_ledger()
+    now = time.time()
+    week = {}
+    for offset in range(6, -1, -1):
+        week[time.strftime('%Y-%m-%d', time.localtime(now - offset * 86400))] = 0
+    styles = {key: 0 for key in STYLES}
+    for row in rows:
+        if row.get('style') in styles:
+            styles[row['style']] += 1
+        day = time.strftime('%Y-%m-%d', time.localtime(safe_number(row.get('at'))))
+        if day in week:
+            week[day] += 1
+    duration = sum(safe_number(row.get('duration')) for row in rows)
+    latest = [{'title': str(row.get('title') or ''), 'at': row.get('at'), 'duration': row.get('duration')}
+              for row in rows[-3:]][::-1]
+    return {'clips': len(rows), 'projects': len({row.get('title') for row in rows}),
+            'minutes': round(duration / 60, 1), 'bytes': int(sum(safe_number(row.get('size')) for row in rows)),
+            'withSource': sum(1 for row in rows if row.get('source')),
+            'styles': styles, 'week': [{'date': day, 'count': count} for day, count in week.items()],
+            'latest': latest}
 
 
 def gc_files(asset_ids, export_ids):
@@ -694,6 +807,8 @@ def render_job(job_id, project):
         run_process([ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '1',
                      '-i', str(directory / 'concat.txt'), '-c', 'copy', '-movflags', '+faststart', str(output)], log)
         (directory / 'subtitles.srt').write_text('\n'.join(subtitles), encoding='utf-8-sig')
+        notes = source_lines(project.get('sourceInfo') or {})
+        source_note = '\n\n' + '\n'.join(notes) if notes else ''
         script = project['title'] + '\n\n' + '\n\n'.join(
             f'{i + 1:02d} {scene["title"]}\n{scene["narration"]}\n原资料：{scene["source"]}\n'
             f'渲染风格：{STYLES[project["style"]]}\n'
@@ -701,12 +816,20 @@ def render_job(job_id, project):
             f'画面文字：{scene["visual"]["text"]}\n'
             f'画面素材：{scene["visual"]["imageName"] if scene["visual"]["imageId"] else "本地情景插画"}'
             for i, scene in enumerate(project['scenes']))
-        (directory / 'script.txt').write_text(script, encoding='utf-8-sig')
+        (directory / 'script.txt').write_text(script + source_note, encoding='utf-8-sig')
+        poster_scene = project['scenes'][0]
+        poster_caption = split_captions(poster_scene['narration'], project['accessible'])[0]
+        draw_frame(poster_scene, 0, len(project['scenes']), project['theme'], project['accessible'],
+                   poster_caption, progress=1.0, style=project['style']).save(directory / 'poster.png')
+        (directory / 'share.txt').write_text(build_share_text(project, duration), encoding='utf-8-sig')
         prune_export_intermediates(directory)
+        size = output.stat().st_size
+        record_ledger(project, job_id, duration, size)
         job.update(status='completed', progress=100, message='制作完成，视频已保存在本机。',
-                   duration=round(duration, 1), size=output.stat().st_size,
+                   duration=round(duration, 1), size=size,
                    video=f'/files/{job_id}/video.mp4', subtitles=f'/files/{job_id}/subtitles.srt',
-                   script=f'/files/{job_id}/script.txt')
+                   script=f'/files/{job_id}/script.txt', poster=f'/files/{job_id}/poster.png',
+                   share=f'/files/{job_id}/share.txt')
         cleanup_exports(protected={job_id})
     except Exception as error:
         with log.open('a', encoding='utf-8') as output:
@@ -750,6 +873,10 @@ class Handler(BaseHTTPRequestHandler):
                                        'ffmpeg': Path(imageio_ffmpeg.get_ffmpeg_exe()).is_file()})
         if path == '/api/usage':
             return self.json_response(usage_stats())
+        if path == '/api/report':
+            return self.json_response(report_stats())
+        if path == '/api/report/card.png':
+            return self.send_bytes(report_png(report_stats()), 'image/png')
         match = re.fullmatch(r'/assets/([a-f0-9]{32})\.png', path)
         if match:
             filename = ASSETS / f'{match.group(1)}.png'
@@ -760,7 +887,7 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             job = JOBS.get(match.group(1))
             return self.json_response(job if job else {'error': '制作任务不存在，请重新制作。'}, 200 if job else 404)
-        match = re.fullmatch(r'/files/([a-f0-9]{32})/(video\.mp4|subtitles\.srt|script\.txt)', path)
+        match = re.fullmatch(r'/files/([a-f0-9]{32})/(video\.mp4|subtitles\.srt|script\.txt|poster\.png|share\.txt|render\.log)', path)
         if match:
             filename = EXPORTS / match.group(1) / match.group(2)
             if not filename.is_file():
@@ -778,7 +905,8 @@ class Handler(BaseHTTPRequestHandler):
             if not filename.is_file():
                 return self.json_response({'error': '预览画面不存在。'}, 404)
             return self.send_bytes(filename.read_bytes(), 'image/png')
-        static_files = {'/': 'index.html', '/app.js': 'app.js', '/project-store.js': 'project-store.js', '/styles.css': 'styles.css', '/favicon.svg': 'favicon.svg'}
+        static_files = {'/': 'index.html', '/app.js': 'app.js', '/project-store.js': 'project-store.js', '/styles.css': 'styles.css', '/favicon.svg': 'favicon.svg',
+                        '/templates.json': 'templates.json'}
         if path not in static_files:
             return self.json_response({'error': '找不到这个页面。'}, 404)
         filename = ROOT / 'static' / static_files[path]
@@ -802,13 +930,15 @@ class Handler(BaseHTTPRequestHandler):
             if start > end or start >= size:
                 return self.send_bytes(b'', 'text/plain', 416, {'Content-Range': f'bytes */{size}'})
             status = 206
-        content_type = {'mp4': 'video/mp4', 'wav': 'audio/wav', 'srt': 'application/x-subrip; charset=utf-8', 'txt': 'text/plain; charset=utf-8'}[filename.suffix[1:]]
+        content_type = {'mp4': 'video/mp4', 'wav': 'audio/wav', 'png': 'image/png',
+                        'srt': 'application/x-subrip; charset=utf-8', 'txt': 'text/plain; charset=utf-8',
+                        'log': 'text/plain; charset=utf-8'}[filename.suffix[1:]]
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(end - start + 1))
         self.send_header('Accept-Ranges', 'bytes')
         self.send_header('X-Content-Type-Options', 'nosniff')
-        if filename.suffix != '.mp4':
+        if filename.suffix in ('.srt', '.txt'):
             self.send_header('Content-Disposition', f'attachment; filename="{filename.name}"')
         if status == 206:
             self.send_header('Content-Range', f'bytes {start}-{end}/{size}')

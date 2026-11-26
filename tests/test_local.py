@@ -17,12 +17,12 @@ from unittest.mock import patch
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from rendering import (SCENE_KINDS, animation_times, draw_frame, fitted_asset, font, phase_starts,
-                       preview_png, split_captions, wrap_text)
-from server import (Handler, ThreadingHTTPServer, ValidationError, caption_wav_path, cleanup_exports,
-                    ensure_caption_wavs, quantized_duration, prune_export_intermediates, reap_jobs,
-                    run_streamed, scene_audio, scene_frames, gc_files, make_draft, store_image,
-                    suggest_visual, timestamp, trim_by_mtime, validate_project, validate_visual)
+from rendering import (SCENE_KINDS, STYLES, THEMES, animation_times, draw_frame, fitted_asset, font,
+                       phase_starts, preview_png, split_captions, wrap_text)
+from server import (Handler, ThreadingHTTPServer, ValidationError, build_share_text, caption_wav_path, cleanup_exports,
+                    ensure_caption_wavs, load_ledger, quantized_duration, prune_export_intermediates, reap_jobs,
+                    record_ledger, report_stats, run_streamed, scene_audio, scene_frames, gc_files, make_draft,
+                    store_image, suggest_visual, timestamp, trim_by_mtime, validate_project, validate_visual)
 
 
 def stub_scene_audio(narration, accessible):
@@ -351,12 +351,15 @@ class CleanupTests(unittest.TestCase):
 
     def test_prune_keeps_only_deliverables(self):
         directory = self.make_job('a' * 32, size=10)
-        (directory / 'clip-000.mp4').write_bytes(b'x')
-        (directory / 'frame-000-000.png').write_bytes(b'x')
-        (directory / 'audio-000.wav').write_bytes(b'x')
-        (directory / 'subtitles.srt').write_text('x', encoding='utf-8')
+        for name in ('clip-000.mp4', 'frame-000-000.png', 'audio-000.wav', 'frames-000.txt', 'concat.txt'):
+            (directory / name).write_bytes(b'x')
+        # 成品包的每一项都必须留在保留名单里，否则会被 prune 立刻删掉。
+        for name in ('subtitles.srt', 'script.txt', 'poster.png', 'share.txt', 'project.json', 'render.log'):
+            (directory / name).write_text('x', encoding='utf-8')
         prune_export_intermediates(directory)
-        self.assertEqual({f.name for f in directory.iterdir()}, {'video.mp4', 'subtitles.srt'})
+        self.assertEqual({f.name for f in directory.iterdir()},
+                         {'video.mp4', 'subtitles.srt', 'script.txt', 'poster.png', 'share.txt',
+                          'project.json', 'render.log'})
 
     def test_gc_files_deletes_named_paths_and_skips_running(self):
         assets = Path(self.tmp.name) / 'assets'
@@ -602,6 +605,93 @@ class PreviewCacheTests(unittest.TestCase):
             self.assertIn(ids[24], jobs)
 
 
+class ExportPackageTests(unittest.TestCase):
+    """成品包的发布文案要能直接贴出去：要点、出处、话题、落款缺一不可。"""
+
+    def project(self, source_info=None):
+        source = '刷单返利是陷阱：陌生人邀请你点赞、刷单，承诺轻松赚钱。\n\n转账之前先核实：收到借钱消息，先联系本人核实。'
+        data = {'title': '守住钱袋子 · 社区反诈提醒', 'scenes': make_draft(source)}
+        if source_info is not None:
+            data['sourceInfo'] = source_info
+        return validate_project(data)
+
+    def test_share_text_has_points_source_and_signature(self):
+        info = {'name': '资料来源：公安部刑侦局《2026版防范电信网络诈骗宣传手册》',
+                'url': 'https://mp.weixin.qq.com/s/example', 'publishedAt': '2026版（2026-11-25 访问）'}
+        text = build_share_text(self.project(info), 42)
+        self.assertTrue(text.startswith('守住钱袋子 · 社区反诈提醒\n\n【本期要点】\n· 刷单返利是陷阱'))
+        self.assertIn('【记住一句话】\n转账之前先核实', text)
+        self.assertNotIn('资料来源：资料来源：', text)
+        self.assertIn('资料来源：公安部刑侦局《2026版防范电信网络诈骗宣传手册》', text)
+        self.assertIn('资料日期：2026版（2026-11-25 访问）', text)
+        self.assertIn('原文链接：https://mp.weixin.qq.com/s/example', text)
+        self.assertIn('时长约 42 秒', text)
+        self.assertIn('#全民反诈 #守住钱袋子 #社区科普', text)
+        self.assertTrue(text.rstrip().endswith('—— 地球村 · 反诈宣传'))
+
+    def test_share_text_without_source_keeps_topics(self):
+        text = build_share_text(self.project())
+        self.assertNotIn('资料来源', text)
+        self.assertNotIn('时长约', text)
+        self.assertIn('#全民反诈', text)
+
+    def test_share_points_are_clipped_to_one_line(self):
+        source = '重点提醒：' + '很' * 50 + '。第二段内容写在这里。'
+        text = build_share_text(validate_project({'title': '长句测试', 'scenes': make_draft(source)}))
+        point = next(line for line in text.splitlines() if line.startswith('· '))
+        self.assertTrue(point.endswith('…'))
+        self.assertLessEqual(len(point), 50)
+
+
+class ReportTests(unittest.TestCase):
+    """产出记录只增不减：删掉成片，累计数字也不能倒退。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.exports = Path(self.tmp.name) / 'exports'
+        self.exports.mkdir()
+        patcher = patch('server.EXPORTS', self.exports)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.project = validate_project({'title': '守住钱袋子 · 社区反诈提醒', 'style': 'illustration',
+                                         'sourceInfo': {'name': '资料来源：公安部《20个防诈关键词》'},
+                                         'scenes': make_draft('验证码不外传：不要将短信验证码告诉任何陌生人。')})
+        self.noir_project = validate_project({'title': '夜色那一支', 'style': 'noir',
+                                              'sourceInfo': {'name': '资料来源：公安部《20个防诈关键词》'},
+                                              'scenes': make_draft('验证码不外传：不要将短信验证码告诉任何陌生人。', 'noir')})
+
+    def test_ledger_accumulates_after_cleanup(self):
+        record_ledger(self.project, 'a' * 32, 61.0, 2048)
+        record_ledger(self.noir_project, 'b' * 32, 59.0, 1024)
+        with patch('server.EXPORT_KEEP', 0), patch('server.JOBS', {}):
+            cleanup_exports()
+        self.assertTrue((self.exports / 'ledger.json').is_file(), '账本不能被清理逻辑删掉')
+        stats = report_stats()
+        self.assertEqual(stats['clips'], 2)
+        self.assertEqual(stats['projects'], 2)
+        self.assertEqual(stats['minutes'], 2.0)
+        self.assertEqual(stats['bytes'], 3072)
+        self.assertEqual(stats['withSource'], 2)
+        self.assertEqual(stats['styles'], {'illustration': 1, 'noir': 1})
+        self.assertEqual(len(stats['week']), 7)
+        self.assertEqual(stats['week'][-1]['count'], 2)
+        self.assertEqual([row['title'] for row in stats['latest']], ['夜色那一支', '守住钱袋子 · 社区反诈提醒'])
+
+    def test_broken_ledger_is_ignored_instead_of_crashing(self):
+        (self.exports / 'ledger.json').write_text('{ 半截', encoding='utf-8')
+        self.assertEqual(load_ledger(), [])
+        self.assertEqual(report_stats()['clips'], 0)
+        record_ledger(self.project, 'c' * 32, 30.0, 512)
+        self.assertEqual(report_stats()['clips'], 1)
+
+    def test_ledger_keeps_only_recent_entries(self):
+        with patch('server.LEDGER_KEEP', 3):
+            for index in range(5):
+                record_ledger({**self.project, 'title': f'第 {index} 支'}, f'{index:032x}', 10.0, 100)
+        self.assertEqual([row['title'] for row in load_ledger()], ['第 2 支', '第 3 支', '第 4 支'])
+
+
 class HttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -634,6 +724,42 @@ class HttpTests(unittest.TestCase):
     def test_private_files_are_not_served(self):
         for path in ['/../server.py', '/server.py', '/exports/test/project.json', '/files/../../server.py']:
             self.assertEqual(self.request(path)[0], 404)
+
+    def test_template_catalog_is_served_from_static_whitelist(self):
+        status, headers, body = self.request('/templates.json')
+        self.assertEqual(status, 200)
+        self.assertIn('application/json', dict(headers)['Content-Type'])
+        self.assertEqual(len(json.loads(body)['templates']), 12)
+
+    def test_report_routes_serve_stats_and_card(self):
+        status, headers, body = self.request('/api/report')
+        self.assertEqual(status, 200)
+        self.assertEqual(dict(headers)['Content-Type'], 'application/json; charset=utf-8')
+        stats = json.loads(body)
+        for key in ('clips', 'projects', 'minutes', 'bytes', 'withSource', 'styles', 'week', 'latest'):
+            self.assertIn(key, stats)
+        self.assertEqual(len(stats['week']), 7)
+        status, headers, body = self.request('/api/report/card.png')
+        self.assertEqual(status, 200)
+        self.assertEqual(dict(headers)['Content-Type'], 'image/png')
+        self.assertEqual(Image.open(io.BytesIO(body)).size, (1080, 1350))
+
+    def test_finished_package_files_are_served(self):
+        job_id = 'a' * 32
+        with tempfile.TemporaryDirectory() as directory, patch('server.EXPORTS', Path(directory)):
+            target = Path(directory) / job_id
+            target.mkdir()
+            Image.new('RGB', (32, 32), 'white').save(target / 'poster.png', format='PNG')
+            (target / 'share.txt').write_text('守住钱袋子 · 发布文案', encoding='utf-8')
+            status, headers, _ = self.request(f'/files/{job_id}/poster.png')
+            self.assertEqual(status, 200)
+            self.assertEqual(dict(headers)['Content-Type'], 'image/png')
+            self.assertNotIn('Content-Disposition', dict(headers))
+            status, headers, body = self.request(f'/files/{job_id}/share.txt')
+            self.assertEqual(status, 200)
+            self.assertIn('attachment', dict(headers)['Content-Disposition'])
+            self.assertIn('发布文案'.encode(), body)
+            self.assertEqual(self.request(f'/files/{job_id}/clip-000.mp4')[0], 404)
 
     def test_external_origin_and_host_are_rejected(self):
         self.assertEqual(self.request('/api/draft', {}, {'Origin': 'https://example.invalid'})[0], 403)
@@ -700,6 +826,99 @@ class HttpTests(unittest.TestCase):
 
     def test_gc_route_requires_local_headers(self):
         self.assertEqual(self.request('/api/gc', {'assets': []}, {'X-Zhiying-Local': ''})[0], 403)
+
+
+TEMPLATES_FILE = Path(__file__).resolve().parents[1] / 'static' / 'templates.json'
+
+
+class TemplateLibraryTests(unittest.TestCase):
+    """内置模板必须可溯源，并且能直接交给 make_draft 使用。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = json.loads(TEMPLATES_FILE.read_text(encoding='utf-8'))
+        cls.templates = cls.catalog['templates']
+
+    def test_sources_are_official_and_complete(self):
+        self.assertEqual(set(self.catalog['sources']), {'handbook', 'keywords'})
+        for kind, source in self.catalog['sources'].items():
+            with self.subTest(kind=kind):
+                self.assertTrue(source['note'].startswith('资料来源：'))
+                self.assertRegex(source['date'], r'^\d{4}')
+                self.assertRegex(source['url'], r'^https://(mp\.weixin\.qq\.com|www\.mps\.gov\.cn)/\S+$')
+
+    def test_ten_handbook_cases_cover_official_shares(self):
+        handbook = [item for item in self.templates if item['sourceKind'] == 'handbook']
+        self.assertEqual(len(handbook), 10)
+        shares = [item['share'] for item in handbook]
+        self.assertEqual(shares, sorted(shares, reverse=True))
+        self.assertAlmostEqual(sum(shares), 89.3, places=1)
+        self.assertEqual(len({item['id'] for item in self.templates}), len(self.templates))
+        for item in self.templates:
+            with self.subTest(template=item['id']):
+                self.assertRegex(item['id'], r'^[a-z]{2,20}$')
+                self.assertIn(item['sourceKind'], self.catalog['sources'])
+                self.assertIn(item['style'], STYLES)
+                self.assertIn(item['theme'], THEMES)
+                self.assertTrue(0 < len(item['title']) <= 40)
+                self.assertTrue(item['tagline'].strip())
+                self.assertTrue(item['audience'].strip())
+                if item['sourceKind'] == 'handbook':
+                    self.assertIsInstance(item['share'], float)
+                else:
+                    self.assertIsNone(item['share'])
+
+    def test_audience_shares_add_up_to_one_hundred(self):
+        # 人口占比抄错一个字就会误导选题，所以逐个校验到 0.1。
+        for item in self.templates:
+            with self.subTest(template=item['id']):
+                if item['gender'] is None or item['age'] is None:
+                    self.assertIsNone(item['gender'])
+                    self.assertIsNone(item['age'])
+                    continue
+                self.assertAlmostEqual(item['gender']['female'] + item['gender']['male'], 100.0, places=1)
+                self.assertAlmostEqual(item['age']['under18'] + item['age']['adult'] + item['age']['over60'], 100.0, places=1)
+
+    def test_keywords_match_body_and_caption_limit(self):
+        for item in self.templates:
+            with self.subTest(template=item['id']):
+                self.assertTrue(1 <= len(item['keywords']) <= 3)
+                for word in item['keywords']:
+                    self.assertTrue(1 <= len(word) <= 12)
+                    self.assertIn(word, item['source'])
+
+    def test_keywords_stay_inside_a_single_scene(self):
+        # 页面只在本幕配音里找关键词；被分镜切断就自动标不红。
+        for item in self.templates:
+            with self.subTest(template=item['id']):
+                narrations = [scene['narration'] for scene in make_draft(item['source'], item['style'])]
+                for word in item['keywords']:
+                    self.assertTrue(any(word in text for text in narrations), f'{word} 被切断到两幕')
+
+    def test_every_template_becomes_a_reviewable_project(self):
+        for item in self.templates:
+            with self.subTest(template=item['id']):
+                scenes = make_draft(item['source'], item['style'])
+                self.assertTrue(1 <= len(scenes) <= 8)
+                self.assertTrue(all(0 < len(scene['title']) <= 24 for scene in scenes))
+                self.assertTrue(all(0 < len(scene['narration']) <= 300 for scene in scenes))
+                # 原文一字不丢：成片配音拼接后必须等于模板正文（忽略空白）。
+                joined = ''.join(scene['narration'] for scene in scenes)
+                self.assertEqual(re.sub(r'\s+', '', joined), re.sub(r'\s+', '', item['source']))
+                project = validate_project({'title': item['title'], 'theme': item['theme'], 'style': item['style'],
+                                            'accessible': True, 'scenes': scenes})
+                self.assertEqual(len(project['scenes']), len(scenes))
+
+    def test_project_source_info_is_kept_for_export(self):
+        scenes = make_draft('验证码不外传：不要将短信验证码告诉任何陌生人。')
+        project = {'title': '反诈宣传', 'scenes': scenes}
+        self.assertEqual(validate_project(project)['sourceInfo'], {'name': '', 'url': '', 'publishedAt': ''})
+        info = {'name': '资料来源：公安部刑侦局《2026版防范电信网络诈骗宣传手册》· 十大高发类案',
+                'url': 'https://mp.weixin.qq.com/s/bgOH2ceJ0rUWQX2_z9grlA', 'publishedAt': '2026版（2026-11-25 访问）'}
+        self.assertEqual(validate_project({**project, 'sourceInfo': info})['sourceInfo'], info)
+        for bad in ['javascript:alert(1)', 'file:///c:/secret', 'https://a b', ['https://www.mps.gov.cn/']]:
+            with self.subTest(sourceInfo=bad), self.assertRaises(ValidationError):
+                validate_project({**project, 'sourceInfo': bad})
 
 
 if __name__ == '__main__':

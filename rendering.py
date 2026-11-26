@@ -1,6 +1,7 @@
 import io
 import math
 import re
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -423,3 +424,78 @@ def draw_noir_scenario(im, visual, progress):
         painter(ImageDraw.Draw(layer))
         im = glow_composite(im, layer, amount)
     return im
+
+
+REPORT_SIZE = (1080, 1350)
+
+
+def report_card(stats):
+    """一张 1080×1350 的产出记录卡：数字、风格分布、近 7 天趋势，可直接发群。"""
+    width, height = REPORT_SIZE
+    colors = THEMES['warm']
+    dim, faint = '#7C8A7C', '#98A198'
+    image = Image.new('RGB', (width, height), colors['bg'])
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((44, 44, width - 44, height - 44), radius=30, fill=colors['card'],
+                           outline=colors['soft'], width=2)
+    draw.text((92, 100), '知映 · 反诈短片产出记录', font=font(46, True), fill=colors['ink'])
+    draw.text((92, 166), f'{time.strftime("%Y-%m-%d %H:%M", time.localtime())} 生成 · 仅统计本机产出',
+              font=font(23), fill=faint)
+    draw.line((92, 214, width - 92, 214), fill=colors['soft'], width=2)
+
+    tiles = [('累计成片', f'{int(stats.get("clips") or 0)}', '支'),
+             ('覆盖作品', f'{int(stats.get("projects") or 0)}', '个'),
+             ('累计时长', f'{float(stats.get("minutes") or 0):.1f}', '分钟')]
+    for index, (label, value, unit) in enumerate(tiles):
+        left = 92 + index * 300
+        draw.rounded_rectangle((left, 252, left + 272, 436), radius=22, fill=colors['bg'])
+        draw.text((left + 28, 278), label, font=font(23), fill=dim)
+        draw.text((left + 28, 312), value, font=font(76, True), fill=colors['ink'])
+        draw.text((left + 30 + font(76, True).getlength(value), 372), unit, font=font(25), fill=colors['ink'])
+
+    draw.text((92, 486), '风格分布', font=font(27, True), fill=colors['ink'])
+    styles = stats.get('styles') or {}
+    total = max(1, sum(int(value or 0) for value in styles.values()))
+    y = 536
+    for key, label in STYLES.items():
+        count = int(styles.get(key) or 0)
+        draw.text((92, y), label, font=font(23), fill=dim)
+        draw.rounded_rectangle((300, y + 4, 860, y + 26), radius=11, fill=colors['bg'])
+        bar = int(560 * count / total) if count else 0
+        if bar:
+            draw.rounded_rectangle((300, y + 4, 300 + max(bar, 14), y + 26), radius=11, fill=colors['accent'])
+        draw.text((884, y), f'{count} 支', font=font(23), fill=colors['ink'])
+        y += 46
+
+    draw.text((92, 646), '近 7 天产出', font=font(27, True), fill=colors['ink'])
+    week = stats.get('week') or []
+    peak = max([int(item.get('count') or 0) for item in week] + [1])
+    base = 930
+    for index, item in enumerate(week):
+        count = int(item.get('count') or 0)
+        left = 104 + index * 120
+        bar = int(210 * count / peak) if count else 0
+        if bar:
+            draw.rounded_rectangle((left, base - bar, left + 76, base), radius=10, fill=colors['accent'])
+        else:
+            draw.rounded_rectangle((left, base - 8, left + 76, base), radius=4, fill=colors['soft'])
+        draw.text((left + 38, base - bar - 30), str(count), font=font(23, True), fill=colors['ink'], anchor='mm')
+        draw.text((left + 38, base + 26), str(item.get('date') or '')[5:], font=font(21), fill=faint, anchor='mm')
+
+    draw.line((92, 1000, width - 92, 1000), fill=colors['soft'], width=2)
+    draw.text((92, 1030), f'其中 {int(stats.get("withSource") or 0)} 支标注了官方资料来源', font=font(23), fill=dim)
+    draw.text((92, 1068), f'成片累计占用 {float(stats.get("bytes") or 0) / 1024 / 1024:.1f} MB；清理旧成片后累计数字仍保留',
+              font=font(23), fill=dim)
+    note = '数据来自本机 exports/ledger.json 账本，不上传任何内容；这张卡可以随短片一起发到群里。'
+    for index, line in enumerate(wrap_text(note, font(21), width - 184)[:3]):
+        draw.text((92, 1136 + index * 34), line, font=font(21), fill=faint)
+    draw.text((width - 92, height - 92), '知映 ZHIYING · 本地公益工具', font=font(21), fill=faint, anchor='rs')
+    return image
+
+
+
+def report_png(stats):
+    output = io.BytesIO()
+    report_card(stats).save(output, format='PNG')
+    return output.getvalue()
+

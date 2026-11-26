@@ -51,7 +51,7 @@ function convertVisual(visual, style) {
   return fresh;
 }
 const DEMO = { title: '一条消息，要多一分警惕', narration: '陌生人的赚钱邀请，不要急着相信。', source: '本地演示画面', reviewed: false, visual: { kind: 'message', text: '收到陌生人的兼职邀请', imageId: null, imageName: '', fit: 'cover', focusX: 50, focusY: 50 } };
-let state = { title: '守住钱袋子 · 社区反诈提醒', source: '', generatedSource: '', sourceInfo: { name: '', url: '', publishedAt: '' }, aspectRatio: '16:9', theme: 'warm', style: 'illustration', accessible: true, scenes: [], activeScene: 0, step: 1, jobId: null, result: null };
+let state = { title: '守住钱袋子 · 社区反诈提醒', source: '', generatedSource: '', sourceInfo: { name: '', url: '', publishedAt: '' }, aspectRatio: '16:9', theme: 'warm', style: 'illustration', accessible: true, scenes: [], activeScene: 0, step: 1, templateId: null, jobId: null, result: null };
 let busy = false;
 let previewSequence = 0;
 let previewUrl = null;
@@ -75,7 +75,7 @@ const thumbCache = new Map();
 const sceneAudio = $('scene-audio');
 
 function normalizeDraft(value) {
-  const draft = { title: '守住钱袋子 · 社区反诈提醒', source: '', generatedSource: '', sourceInfo: { name: '', url: '', publishedAt: '' }, aspectRatio: '16:9', theme: 'warm', style: 'illustration', accessible: true, scenes: [], activeScene: 0, step: 1, jobId: null, result: null, ...value };
+  const draft = { title: '守住钱袋子 · 社区反诈提醒', source: '', generatedSource: '', sourceInfo: { name: '', url: '', publishedAt: '' }, aspectRatio: '16:9', theme: 'warm', style: 'illustration', accessible: true, scenes: [], activeScene: 0, step: 1, templateId: null, jobId: null, result: null, ...value };
   draft.title = String(draft.title || '').slice(0, 40);
   draft.source = String(draft.source || '');
   draft.generatedSource = String(draft.generatedSource || '');
@@ -83,6 +83,13 @@ function normalizeDraft(value) {
   if (!STYLES[draft.style]) draft.style = 'illustration';
   if (!['16:9', '9:16'].includes(draft.aspectRatio)) draft.aspectRatio = '16:9';
   if (!draft.sourceInfo || typeof draft.sourceInfo !== 'object') draft.sourceInfo = { name: '', url: '', publishedAt: '' };
+  // 模板编号只是选题线索；旧草稿或外部备份没有这个字段时必须能正常打开。
+  draft.templateId = typeof draft.templateId === 'string' && /^[a-z]{2,20}$/.test(draft.templateId) ? draft.templateId : null;
+  draft.sourceInfo = {
+    name: String(draft.sourceInfo.name || '').slice(0, 200),
+    url: /^https?:\/\//.test(draft.sourceInfo.url || '') ? String(draft.sourceInfo.url).slice(0, 200) : '',
+    publishedAt: String(draft.sourceInfo.publishedAt || '').slice(0, 200),
+  };
   draft.accessible = Boolean(draft.accessible);
   draft.scenes = Array.isArray(draft.scenes) ? draft.scenes.slice(0, 8) : [];
   for (const scene of draft.scenes) {
@@ -294,7 +301,7 @@ async function request(path, payload) {
 }
 
 function payload() {
-  return { title: state.title, theme: state.theme, style: state.style, accessible: state.accessible, scenes: state.scenes };
+  return { title: state.title, theme: state.theme, style: state.style, accessible: state.accessible, sourceInfo: state.sourceInfo, scenes: state.scenes };
 }
 
 function reviewedCount() { return state.scenes.filter((s) => s.reviewed).length; }
@@ -433,6 +440,37 @@ function toggleAudition() {
   playScene(state.activeScene, 'audition');
 }
 
+let shareTextReady = false;
+
+function clearPackageDom() {
+  shareTextReady = false;
+  $('export-package').hidden = true;
+  $('share-text').value = '';
+  $('copy-share').disabled = true;
+  $('poster-thumbnail').hidden = true;
+  $('poster-thumbnail').removeAttribute('src');
+  for (const id of ['download-poster', 'download-share']) $(id).removeAttribute('href');
+}
+
+async function loadShareText(url) {
+  const area = $('share-text');
+  shareTextReady = false;
+  $('copy-share').disabled = true;
+  area.value = '正在读取发布文案…';
+  try {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error(String(response.status));
+    area.value = await response.text();
+    shareTextReady = true;
+    $('copy-share').disabled = false;
+    $('download-share').href = url;
+  } catch {
+    // 旧版成片没有 share.txt；不能让失败提示被当成文案复制出去。
+    area.value = '这支成片的发布文案不可用（旧版成片没有这个文件）；重新合成后会随成品包一起生成。';
+    $('download-share').removeAttribute('href');
+  }
+}
+
 function clearResultDom() {
   const video = $('result-video');
   video.pause();
@@ -440,6 +478,7 @@ function clearResultDom() {
   video.load();
   video.hidden = true;
   $('export-success').hidden = true;
+  clearPackageDom();
   for (const id of ['download-video', 'download-subtitles', 'download-script']) $(id).removeAttribute('href');
   $('preview-image').hidden = false;
   $('preview-title').textContent = '画面预览';
@@ -455,6 +494,7 @@ function invalidateResult() {
     $('result-video').load();
   }
   $('export-success').hidden = true;
+  clearPackageDom();
   for (const id of ['download-video', 'download-subtitles', 'download-script']) $(id).removeAttribute('href');
   $('result-video').hidden = true;
   $('preview-image').hidden = false;
@@ -486,7 +526,7 @@ function setStep(step) {
   state.step = step;
   updateNavigation();
   if (step === 2) renderEditor();
-  if (step === 3) { renderExport(); refreshUsage(); }
+  if (step === 3) { renderExport(); refreshUsage(); refreshReport(); }
   showOutputIfReady();
   save();
   document.querySelector('.workspace').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -905,12 +945,31 @@ function showOutputIfReady() {
   const result = state.result;
   $('export-success').hidden = false;
   $('render-progress').hidden = true;
+  $('render-log').hidden = true;
   $('export-button').hidden = true;
   $('result-details').textContent = `${displayDuration(result.duration)} · ${(result.size / 1024 / 1024).toFixed(1)} MB · 已保存到本机`;
   if ($('result-video').getAttribute('src') !== result.video) $('result-video').src = result.video;
   $('download-video').href = result.video;
   $('download-subtitles').href = result.video.replace('video.mp4', 'subtitles.srt');
   $('download-script').href = result.video.replace('video.mp4', 'script.txt');
+  const poster = result.poster || result.video.replace('video.mp4', 'poster.png');
+  const share = result.share || result.video.replace('video.mp4', 'share.txt');
+  $('download-poster').href = poster;
+  $('download-share').href = share;
+  $('poster-thumbnail').onerror = () => {
+    $('poster-thumbnail').hidden = true;
+    $('download-poster').removeAttribute('href');
+  };
+  $('poster-thumbnail').src = poster;
+  $('poster-thumbnail').hidden = false;
+  $('export-package').hidden = false;
+  loadShareText(share);
+  const base = (state.title || '知映-反诈宣传').replace(/[\\/:*?"<>|]/g, '').slice(0, 40).trim() || '知映-反诈宣传';
+  $('download-video').setAttribute('download', `${base}.mp4`);
+  $('download-subtitles').setAttribute('download', `${base}.srt`);
+  $('download-script').setAttribute('download', `${base}-分镜脚本.txt`);
+  $('download-poster').setAttribute('download', `${base}-首帧海报.png`);
+  $('download-share').setAttribute('download', `${base}-发布文案.txt`);
   $('preview-caption').textContent = '点击播放器播放，可拖动进度并调节音量';
   $('estimated-time').textContent = `成片 ${displayDuration(result.duration)}`;
 }
@@ -919,6 +978,24 @@ function formatBytes(bytes) {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+async function refreshReport() {
+  try {
+    const stats = await (await request('/api/report')).json();
+    const week = (stats.week || []).reduce((sum, item) => sum + item.count, 0);
+    $('report-clips').textContent = stats.clips;
+    $('report-projects').textContent = stats.projects;
+    $('report-minutes').textContent = Number(stats.minutes || 0).toFixed(1);
+    $('report-source').textContent = stats.withSource;
+    $('report-range').textContent = `近 7 天新增 ${week} 支 · 成片累计 ${formatBytes(stats.bytes)}`;
+    $('report-latest').textContent = stats.latest && stats.latest.length
+      ? `最近：${stats.latest.map((row) => row.title).filter(Boolean).join(' · ')}`
+      : '还没有成片；完成第一次本地合成后，这里会累计你的产出。';
+    $('report-card').href = `/api/report/card.png?t=${Date.now()}`;
+  } catch {
+    $('report-range').textContent = '统计暂时不可用，可稍后刷新';
+  }
 }
 
 async function refreshUsage() {
@@ -962,13 +1039,17 @@ async function pollJob() {
       setBusy(false);
       save();
       notify('视频已生成，可直接播放或下载 MP4。', true);
+      refreshReport();
       return;
     }
     if (job.status === 'failed') {
+      const failedId = state.jobId;
       state.jobId = null;
       setBusy(false);
       save();
       notify(job.message);
+      $('render-log').href = `/files/${failedId}/render.log`;
+      $('render-log').hidden = false;
       return;
     }
     pollTimer = setTimeout(pollJob, 1200);
@@ -979,6 +1060,122 @@ async function pollJob() {
     $('progress-message').textContent = '连接中断，任务可能仍在本机运行。';
     notify(error.status === 404 ? '服务已重启，任务记录已清空；已有导出文件仍在 exports 目录。' : '无法连接本地服务，请恢复服务后点击“重新连接制作任务”。');
   }
+}
+
+const TEMPLATE_GROUPS = { handbook: '公安部十大高发类案', keywords: '20 个防诈关键词 · 补位' };
+let templateCatalog = null;
+
+function formatPercent(value) { return `${Number(value).toFixed(1)}%`; }
+
+function templateById(id) {
+  return templateCatalog && id ? (templateCatalog.templates.find((item) => item.id === id) || null) : null;
+}
+
+function templateDemography(template) {
+  if (!template.gender || !template.age) return '官方未公布该类画像占比，请按关键词场景自行判断';
+  const { female, male } = template.gender;
+  const { under18, adult, over60 } = template.age;
+  return `女 ${formatPercent(female)} / 男 ${formatPercent(male)}；18 岁以下 ${formatPercent(under18)} / 18–60 岁 ${formatPercent(adult)} / 60 岁以上 ${formatPercent(over60)}`;
+}
+
+function renderTemplateInfo(template) {
+  const info = $('template-info');
+  if (!template || !templateCatalog) { info.hidden = true; return; }
+  const source = templateCatalog.sources[template.sourceKind] || {};
+  $('template-name').textContent = template.name;
+  $('template-share').textContent = template.share === null ? '关键词补位' : `占全部电诈案件 ${formatPercent(template.share)}`;
+  $('template-tagline').textContent = template.tagline;
+  $('template-audience').textContent = template.audience;
+  $('template-demography').textContent = templateDemography(template);
+  $('template-source-note').textContent = `${source.note || '本地内置模板'}${source.date ? `（${source.date}）` : ''}`;
+  const link = $('template-source-link');
+  if (/^https?:\/\//.test(source.url || '')) {
+    link.href = source.url;
+    link.hidden = false;
+  } else {
+    link.removeAttribute('href');
+    link.hidden = true;
+  }
+  info.hidden = false;
+}
+
+function syncTemplateSelect() {
+  const template = templateById(state.templateId);
+  $('template-select').value = template ? template.id : '';
+  renderTemplateInfo(template);
+}
+
+function renderTemplateOptions() {
+  const select = $('template-select');
+  const groups = {};
+  for (const [kind, label] of Object.entries(TEMPLATE_GROUPS)) {
+    const group = document.createElement('optgroup');
+    group.label = label;
+    groups[kind] = group;
+    select.append(group);
+  }
+  for (const template of templateCatalog.templates) {
+    const option = document.createElement('option');
+    option.value = template.id;
+    option.textContent = template.share === null ? template.name : `${template.name} · 发案占比 ${formatPercent(template.share)}`;
+    (groups[template.sourceKind] || groups.handbook).append(option);
+  }
+  $('template-count').textContent = `共 ${templateCatalog.templates.length} 篇 · 按官方发案占比排序`;
+  syncTemplateSelect();
+}
+
+async function loadTemplates() {
+  try {
+    const response = await fetch('/templates.json', { cache: 'no-store' });
+    if (!response.ok) throw new Error(String(response.status));
+    const data = await response.json();
+    if (!data || !data.sources || !Array.isArray(data.templates) || !data.templates.length) throw new Error('模板内容不完整');
+    templateCatalog = data;
+    renderTemplateOptions();
+  } catch {
+    $('template-select').disabled = true;
+    $('template-count').textContent = '模板库暂不可用，可手动填写资料';
+  }
+}
+
+// 只给原文里真实出现的词标红；资料被改过就不动，避免误标。
+function applyTemplateKeywords() {
+  const template = templateById(state.templateId);
+  if (!template || template.source !== state.source) return;
+  for (const scene of state.scenes) {
+    const hits = template.keywords.filter((word) => scene.narration.includes(word)).slice(0, 3);
+    if (hits.length) scene.visual.keywords = hits;
+  }
+}
+
+function applyTemplate(id) {
+  const template = templateById(id);
+  if (!template) { state.templateId = null; syncTemplateSelect(); return; }
+  state.templateId = template.id;
+  state.title = template.title.slice(0, 40);
+  state.source = template.source;
+  if (STYLES[template.style]) state.style = template.style;
+  if (['warm', 'teal', 'bold'].includes(template.theme)) state.theme = template.theme;
+  const source = templateCatalog.sources[template.sourceKind] || {};
+  state.sourceInfo = { name: source.note || '', url: /^https?:\/\//.test(source.url || '') ? source.url : '', publishedAt: source.date || '' };
+  if (state.scenes.length) {
+    state.scenes.forEach((scene) => {
+      scene.visual = convertVisual(scene.visual, state.style);
+      scene.reviewed = false;
+    });
+    renderEditor();
+  }
+  $('project-title').value = state.title;
+  $('source-input').value = state.source;
+  $('source-count').textContent = state.source.length;
+  renderStyle();
+  renderTheme();
+  syncTemplateSelect();
+  invalidateResult();
+  updateNavigation();
+  schedulePreview();
+  save();
+  notify(`已套用「${template.name}」模板：标题、资料与风格都已填好，可继续修改。`, true);
 }
 
 $('source-input').value = state.source;
@@ -1008,6 +1205,16 @@ $('sample-button').addEventListener('click', () => {
   updateNavigation();
   save();
   notify('已填入演示资料，请在下一步逐幕核对。', true);
+});
+$('template-select').addEventListener('change', (event) => {
+  if (busy) return;
+  const template = templateById(event.target.value);
+  if (template && state.source.trim() && state.source !== template.source
+      && !confirm(`用「${template.name}」模板替换当前资料？原有分镜会保留，直到你确认重新整理。`)) {
+    syncTemplateSelect();
+    return;
+  }
+  applyTemplate(event.target.value);
 });
 
 function renderTheme() {
@@ -1148,6 +1355,7 @@ $('generate-button').addEventListener('click', async () => {
     const data = await (await request('/api/draft', { source: state.source, style: state.style })).json();
     state.scenes = data.scenes;
     state.generatedSource = state.source;
+    applyTemplateKeywords();
     state.activeScene = 0;
     invalidateResult();
     setBusy(false);
@@ -1194,6 +1402,7 @@ $('export-button').addEventListener('click', async () => {
   if (!state.title.trim()) return notify('请返回资料页填写作品名称。');
   setBusy(true);
   $('render-progress').hidden = false;
+  $('render-log').hidden = true;
   $('progress-bar').value = 0;
   $('progress-value').textContent = '0%';
   $('progress-message').textContent = '准备本地合成…';
@@ -1239,6 +1448,7 @@ $('clear-draft').addEventListener('click', async () => {
   if (busy || !confirm('清空当前项目里的资料和分镜草稿？不会删除已导出的视频，也不会影响其他项目。')) return;
   state.source = '';
   state.generatedSource = '';
+  state.templateId = null;
   state.scenes = [];
   state.activeScene = 0;
   state.step = 1;
@@ -1260,12 +1470,26 @@ $('result-video').addEventListener('error', () => {
   save();
   notify('成片文件已被清理或移动，无法载入；可返回修改后重新合成。');
 });
+$('copy-share').addEventListener('click', async () => {
+  if (!shareTextReady) return notify('发布文案还没有读取完成，请稍后再试。');
+  const text = $('share-text').value;
+  if (!text.trim()) return notify('发布文案还没有读取完成，请稍后再试。');
+  try {
+    await navigator.clipboard.writeText(text);
+    notify('发布文案已复制，可直接粘贴到公众号或群聊。', true);
+  } catch {
+    $('share-text').select();
+    notify('浏览器未允许自动复制，已选中文案，请按 Ctrl+C 复制。');
+  }
+});
+$('report-refresh').addEventListener('click', refreshReport);
 
 function applyStateToUi() {
   $('source-input').value = state.source;
   $('project-title').value = state.title;
   $('source-count').textContent = state.source.length;
   $('accessible-mode').checked = state.accessible;
+  syncTemplateSelect();
   renderStyle();
   renderTheme();
   renderSceneList();
@@ -1572,10 +1796,12 @@ $('library-retry').addEventListener('click', async () => {
 
 setEditorTab('script');
 refreshEntrances();
+loadTemplates();
 initStore().then(() => {
   applyStateToUi();
   refreshStatus();
   refreshEntrances();
+  refreshReport();
   if (state.jobId) {
     state.step = 3;
     setBusy(true);
